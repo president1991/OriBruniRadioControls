@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 """
 Script ottimizzato per lettura Sportident da seriale e invio punzonature via Internet.
-Riduce il traffico di rete con keep-alive, gzip, header minimi.
+Versione ottimizzata per Raspberry Pi con gestione efficiente delle risorse e del consumo energetico.
 """
 
 import logging
 import time
 import json
+import signal
+import os
+import configparser
 import gzip
 import serial
 import threading
+import sys
+import psutil
+from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 import mysql.connector
@@ -18,49 +24,149 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from construct import *
 
-# --------------------------
-# CONFIGURAZIONE GENERALE
-# --------------------------
-SERIAL_PORT    = '/dev/ttyUSB0'
-BAUDRATE       = 38400
-POLL_SERIAL_MS = 10  # ms tra letture seriale
-REMOTE_URL     = "https://orienteering.services/radiocontrol/receive_data.php"
-DB_CONFIG = {
-    'user':     'root',
-    'password': 'PuhA7gWCrW',
-    'host':     'localhost',
-    'database': 'OriBruniRadioControls'
-}
+# Variabili globali per gestione risorse
+executor = None
+serial_port = None
+session = None
+shutdown_event = threading.Event()
+config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
+log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 
 # --------------------------
-# LOGGER
+# CARICAMENTO CONFIGURAZIONE
 # --------------------------
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+def load_config():
+    """Carica configurazione da file esterno o crea default se non esiste"""
+    config = configparser.ConfigParser()
+    
+    # Crea directory logs se non esiste
+    if not os.path.exists(log_path):
+        os.makedirs(log_path)
+    
+    # Configurazione di default
+    if not os.path.exists(config_path):
+        config['SERIAL'] = {
+            'PORT': '/dev/ttyUSB0',
+            'BAUDRATE': '38400',
+            'POLL_SERIAL_MS': '10'
+        }
+        config['DATABASE'] = {
+            'USER': 'root',
+            'PASSWORD': 'PuhA7gWCrW',
+            'HOST': 'localhost',
+            'DATABASE': 'OriBruniRadioControls'
+        }
+        config['REMOTE'] = {
+            'URL': 'https://orienteering.services/radiocontrol/receive_data.php',
+            'MAX_RETRIES': '3',
+            'BACKOFF_FACTOR': '0.5',
+            'TIMEOUT': '5'
+        }
+        config['LOGGING'] = {
+            'LEVEL': 'INFO',
+            'MAX_SIZE_MB': '5',
+            'BACKUP_COUNT': '3'
+        }
+        config['EXECUTION'] = {
+            'MAX_WORKERS': '3',
+            'WATCHDOG_INTERVAL': '60'
+        }
+        config['RASPBERRY'] = {
+            'OPTIMIZE_POWER': 'true',
+            'CPU_LIMIT': '80',
+            'NETWORK_TIMEOUT': '30',
+            'KEEP_ALIVE_INTERVAL': '300'
+        }
+        
+        # Scrivi il file di configurazione
+        with open(config_path, 'w') as f:
+            config.write(f)
+        print(f"File di configurazione creato in {config_path}. Modifica i valori e riavvia.")
+    
+    config.read(config_path)
+    return config
+
+# --------------------------
+# SETUP LOGGING
+# --------------------------
+def setup_logging(config):
+    """Configura sistema di logging con rotazione file"""
+    log_level = getattr(logging, config['LOGGING'].get('LEVEL', 'INFO'))
+    max_size = int(config['LOGGING'].get('MAX_SIZE_MB', '5')) * 1024 * 1024
+    backup_count = int(config['LOGGING'].get('BACKUP_COUNT', '3'))
+    
+    log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    log_file = os.path.join(log_path, 'sportident.log')
+    
+    # Handler per file con rotazione
+    file_handler = RotatingFileHandler(
+        log_file, maxBytes=max_size, backupCount=backup_count)
+    file_handler.setFormatter(log_formatter)
+    
+    # Handler per console
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(log_formatter)
+    
+    # Configurazione root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    
+    logging.info("Logging configurato con livello %s", config['LOGGING'].get('LEVEL'))
 
 # --------------------------
 # SESSIONE HTTP OTTIMIZZATA
 # --------------------------
-SESSION = requests.Session()
-adapter = HTTPAdapter(
-    pool_connections=2,
-    pool_maxsize=2,
-    max_retries=Retry(total=2, backoff_factor=0.5,
-                       status_forcelist=[500,502,503,504])
-)
-SESSION.mount("https://", adapter)
-SESSION.headers.update({
-    "User-Agent":      "OriBruniClient/1.0",
-    "Accept":          "application/json",
-    "Accept-Encoding": "gzip",
-    "Connection":      "keep-alive",
-    "Content-Type":    "application/json"
-})
+def create_http_session(config):
+    """Crea una sessione HTTP ottimizzata per connessioni instabili"""
+    global session
+    
+    if session:
+        try:
+            session.close()
+        except:
+            pass
+    
+    session = requests.Session()
+    
+    # Configurazione retry con backoff
+    retries = int(config['REMOTE'].get('MAX_RETRIES', '3'))
+    backoff = float(config['REMOTE'].get('BACKOFF_FACTOR', '0.5'))
+    timeout = int(config['REMOTE'].get('TIMEOUT', '5'))
+    
+    retry_strategy = Retry(
+        total=retries,
+        backoff_factor=backoff,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["POST", "GET"]
+    )
+    
+    adapter = HTTPAdapter(
+        pool_connections=1,
+        pool_maxsize=2,
+        max_retries=retry_strategy
+    )
+    
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    session.headers.update({
+        "User-Agent":      "OriBruniClient/1.0",
+        "Accept":          "application/json",
+        "Accept-Encoding": "gzip",
+        "Connection":      "keep-alive",
+        "Content-Type":    "application/json"
+    })
+    
+    return session
 
 # --------------------------
 # PARSING SPORTIDENT
 # --------------------------
 def remove_dle(data: bytes) -> bytes:
+    """Rimuove caratteri DLE dalla sequenza di byte"""
     result = bytearray()
     skip = False
     for b in data:
@@ -113,6 +219,7 @@ SiPacket = Struct(
 )
 
 def convert_extended_time(td_byte: int, th_tl: timedelta, tss_byte: int):
+    """Converte i campi di tempo Sportident in secondi"""
     half_day = td_byte & 0x01
     secs = th_tl.total_seconds() + (12*3600 if half_day else 0) + tss_byte/256.0
     return secs
@@ -121,6 +228,7 @@ def convert_extended_time(td_byte: int, th_tl: timedelta, tss_byte: int):
 # FRAME EXTRACTION
 # --------------------------
 def extract_frame(buffer: bytearray):
+    """Estrae un frame dal buffer di byte"""
     while buffer and buffer[0] == 0xFF:
         buffer.pop(0)
     try:
@@ -144,6 +252,7 @@ def extract_frame(buffer: bytearray):
 # DECODIFICA PACCHETTO
 # --------------------------
 def decode_sportident(raw: bytes):
+    """Decodifica un pacchetto Sportident"""
     if not (raw.startswith(b"\x02") and raw.endswith(b"\x03")):
         return None
     body = remove_dle(raw[1:-1])
@@ -165,15 +274,17 @@ def decode_sportident(raw: bytes):
 # --------------------------
 # FUNZIONI DATABASE
 # --------------------------
-def get_db_connection():
+def get_db_connection(db_config):
+    """Ottiene una connessione al database"""
     try:
-        return mysql.connector.connect(**DB_CONFIG)
+        return mysql.connector.connect(**db_config)
     except mysql.connector.Error as e:
         logging.error("DB conn error: %s", e)
         return None
 
-def insert_into_db(parsed):
-    conn = get_db_connection()
+def insert_into_db(parsed, db_config):
+    """Inserisce un record nel database"""
+    conn = get_db_connection(db_config)
     if not conn:
         return None
     cur = conn.cursor()
@@ -200,8 +311,9 @@ def insert_into_db(parsed):
         cur.close(); conn.close()
     return None
 
-def fetch_record_by_id(record_id):
-    conn = get_db_connection()
+def fetch_record_by_id(record_id, db_config):
+    """Recupera un record dal database per ID"""
+    conn = get_db_connection(db_config)
     if not conn:
         return None
     try:
@@ -214,8 +326,40 @@ def fetch_record_by_id(record_id):
         conn.close()
     return None
 
-def get_device_identifiers():
-    conn = get_db_connection()
+def get_unsent_records(db_config, limit=10):
+    """Recupera record non inviati dal database"""
+    conn = get_db_connection(db_config)
+    if not conn:
+        return []
+    try:
+        with conn.cursor(dictionary=True) as cur:
+            cur.execute("SELECT * FROM radiocontrol WHERE sent_internet=0 ORDER BY id ASC LIMIT %s", (limit,))
+            return cur.fetchall()
+    except mysql.connector.Error as e:
+        logging.error("Fetch unsent error: %s", e)
+    finally:
+        conn.close()
+    return []
+
+def mark_record_as_sent(record_id, db_config):
+    """Marca un record come inviato"""
+    conn = get_db_connection(db_config)
+    if not conn:
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE radiocontrol SET sent_internet=1 WHERE id=%s", (record_id,))
+            conn.commit()
+            return True
+    except mysql.connector.Error as e:
+        logging.error("Mark sent error: %s", e)
+    finally:
+        conn.close()
+    return False
+
+def get_device_identifiers(db_config):
+    """Recupera gli identificatori del dispositivo dal database"""
+    conn = get_db_connection(db_config)
     if not conn:
         return None, None
     cur = conn.cursor()
@@ -224,12 +368,13 @@ def get_device_identifiers():
     cur.close(); conn.close()
     if len(rows) == 2:
         d = {r[0]: r[1] for r in rows}
-        return d['nome'], d['pkey']
+        return d.get('nome'), d.get('pkey')
     logging.error("Device IDs mancanti")
     return None, None
 
-def log_event(nome, errore, descr):
-    conn = get_db_connection()
+def log_event(nome, errore, descr, db_config):
+    """Registra un evento nel database di log"""
+    conn = get_db_connection(db_config)
     if not conn:
         return
     cur = conn.cursor()
@@ -243,69 +388,354 @@ def log_event(nome, errore, descr):
         cur.close(); conn.close()
 
 # --------------------------
-# INVIO RECORD ONLINE OTTIMIZZATO
+# INVIO RECORD ONLINE
 # --------------------------
-def send_record_online(record):
+def send_record_online(record, config, session, db_config):
+    """Invia un record al servizio online"""
+    if not record:
+        return False
+    
     record_id = record.get('id')
-    name, pkey = get_device_identifiers()
+    name, pkey = get_device_identifiers(db_config)
     if not name or not pkey:
         logging.error("Device IDs mancanti per %s", record_id)
-        return
+        return False
+    
+    # Converti datetime in stringa se necessario
+    punch_time = record['punch_time']
+    timestamp = record['timestamp']
+    
+    if isinstance(punch_time, datetime):
+        punch_time = punch_time.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+    if isinstance(timestamp, datetime):
+        timestamp = timestamp.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+    
     payload = {
         'name': name,
         'pkey': pkey,
         'id': record_id,
         'control': record['control'],
         'card_number': record['card_number'],
-        'punch_time': record['punch_time'].strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
-        'timestamp': record['timestamp']
+        'punch_time': punch_time,
+        'timestamp': timestamp
     }
+    
+    timeout = int(config['REMOTE'].get('TIMEOUT', '5'))
+    remote_url = config['REMOTE'].get('URL')
+    
     try:
-        resp = SESSION.post(REMOTE_URL, json=payload, timeout=5)
+        resp = session.post(remote_url, json=payload, timeout=timeout)
         resp.raise_for_status()
         data = resp.json()
         if data.get('status') == 'success':
             logging.info("Inviato online id=%s", record_id)
-            log_event(name, 'Successo', f'id={record_id}')
+            mark_record_as_sent(record_id, db_config)
+            log_event(name, 'Successo', f'id={record_id}', db_config)
+            return True
         else:
             logging.error("Errore invio %s: %s", record_id, data)
-            log_event(name, 'Errore Invio', str(data))
+            log_event(name, 'Errore Invio', str(data), db_config)
+            return False
     except requests.RequestException as e:
         logging.error("HTTP error %s: %s", record_id, e)
-        log_event(name, 'Errore Connessione', str(e))
+        log_event(name, 'Errore Connessione', str(e), db_config)
+        return False
+
+def process_record(record_id, config, session, db_config):
+    """Recupera e invia un record"""
+    record = fetch_record_by_id(record_id, db_config)
+    if record:
+        return send_record_online(record, config, session, db_config)
+    return False
+
+# --------------------------
+# MONITORAGGIO SISTEMA
+# --------------------------
+def check_system_health():
+    """Controlla lo stato di salute del sistema"""
+    try:
+        # Controllo CPU
+        cpu_percent = psutil.cpu_percent(interval=1)
+        
+        # Controllo memoria
+        memory = psutil.virtual_memory()
+        memory_percent = memory.percent
+        
+        # Controllo disco
+        disk = psutil.disk_usage('/')
+        disk_percent = disk.percent
+        
+        # Controllo temperatura (solo su Raspberry Pi)
+        temp = None
+        if os.path.exists('/sys/class/thermal/thermal_zone0/temp'):
+            with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
+                temp = float(f.read()) / 1000.0  # Conversione da milligradi a gradi
+        
+        health_data = {
+            'cpu_percent': cpu_percent,
+            'memory_percent': memory_percent,
+            'disk_percent': disk_percent,
+            'temperature': temp
+        }
+        
+        if temp and temp > 80:
+            logging.warning("Temperatura CPU elevata: %.1f°C", temp)
+        
+        if cpu_percent > 90:
+            logging.warning("Utilizzo CPU elevato: %.1f%%", cpu_percent)
+        
+        return health_data
+    except Exception as e:
+        logging.error("Errore monitoraggio sistema: %s", e)
+        return None
+
+# --------------------------
+# KEEP ALIVE E WATCHDOG
+# --------------------------
+def keep_alive_task(config, db_config):
+    """Invia un segnale di keep-alive al server e verifica la connessione"""
+    if shutdown_event.is_set():
+        return
+    
+    try:
+        name, pkey = get_device_identifiers(db_config)
+        if not name or not pkey:
+            logging.error("Device IDs mancanti per keep-alive")
+            return
+        
+        health = check_system_health()
+        payload = {
+            'name': name,
+            'pkey': pkey,
+            'action': 'keepalive',
+            'timestamp': datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
+            'system_status': health
+        }
+        
+        timeout = int(config['REMOTE'].get('TIMEOUT', '5'))
+        remote_url = config['REMOTE'].get('URL').replace('receive_data.php', 'keepalive.php')
+        
+        resp = session.post(remote_url, json=payload, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if data.get('status') == 'success':
+            logging.debug("Keep-alive inviato con successo")
+        else:
+            logging.warning("Errore keep-alive: %s", data)
+    except Exception as e:
+        logging.error("Errore keep-alive: %s", e)
+    
+    # Rischedula il keep-alive
+    if not shutdown_event.is_set():
+        interval = int(config['RASPBERRY'].get('KEEP_ALIVE_INTERVAL', '300'))
+        threading.Timer(interval, keep_alive_task, args=[config, db_config]).start()
+
+def retry_unsent_records(config, db_config):
+    """Riprova a inviare i record non inviati"""
+    if shutdown_event.is_set():
+        return
+    
+    try:
+        unsent = get_unsent_records(db_config)
+        if unsent:
+            logging.info("Trovati %d record non inviati", len(unsent))
+            for record in unsent:
+                if shutdown_event.is_set():
+                    break
+                send_record_online(record, config, session, db_config)
+    except Exception as e:
+        logging.error("Errore retry unsent: %s", e)
+    
+    # Rischedula il retry
+    if not shutdown_event.is_set():
+        # Esegui ogni 5 minuti
+        threading.Timer(300, retry_unsent_records, args=[config, db_config]).start()
+
+# --------------------------
+# GESTIONE SEGNALI
+# --------------------------
+def setup_signal_handlers():
+    """Configura handler per segnali di terminazione"""
+    def signal_handler(sig, frame):
+        logging.info("Segnale %s ricevuto, chiusura in corso...", sig)
+        shutdown_event.set()
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+# --------------------------
+# OTTIMIZZAZIONE RASPBERRY PI
+# --------------------------
+def optimize_raspberry_pi(config):
+    """Ottimizza le impostazioni del Raspberry Pi"""
+    if config['RASPBERRY'].getboolean('OPTIMIZE_POWER', True):
+        try:
+            # Disattiva LED se possibile
+            for led_path in ['/sys/class/leds/led0/brightness', '/sys/class/leds/led1/brightness']:
+                if os.path.exists(led_path) and os.access(led_path, os.W_OK):
+                    with open(led_path, 'w') as f:
+                        f.write('0')
+            
+            # Riduce la frequenza CPU se possibile
+            if os.path.exists('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'):
+                with open('/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor', 'w') as f:
+                    f.write('powersave')
+            
+            logging.info("Ottimizzazione energia Raspberry Pi completata")
+        except Exception as e:
+            logging.warning("Impossibile ottimizzare energia Raspberry Pi: %s", e)
 
 # --------------------------
 # LOOP PRINCIPALE
 # --------------------------
-def main_loop():
+def main_loop(config):
+    """Loop principale del programma"""
+    global executor, serial_port, session
+    
+    # Inizializzazione risorse
+    db_config = {
+        'user': config['DATABASE']['USER'],
+        'password': config['DATABASE']['PASSWORD'],
+        'host': config['DATABASE']['HOST'],
+        'database': config['DATABASE']['DATABASE']
+    }
+    
+    # Crea sessione HTTP
+    session = create_http_session(config)
+    
+    # Ottimizza per Raspberry Pi
+    optimize_raspberry_pi(config)
+    
+    # Inizializza thread pool
+    max_workers = int(config['EXECUTION'].get('MAX_WORKERS', '3'))
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    
+    # Avvia keep-alive e retry
+    threading.Timer(10, keep_alive_task, args=[config, db_config]).start()
+    threading.Timer(30, retry_unsent_records, args=[config, db_config]).start()
+    
+    # Apertura porta seriale
     try:
-        ser = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=0.1)
-        logging.info("Porta seriale %s aperta a %d baud", SERIAL_PORT, BAUDRATE)
+        port = config['SERIAL']['PORT']
+        baudrate = int(config['SERIAL']['BAUDRATE'])
+        serial_port = serial.Serial(port, baudrate, timeout=0.1)
+        logging.info("Porta seriale %s aperta a %d baud", port, baudrate)
     except Exception as e:
         logging.critical("Errore apertura seriale: %s", e)
+        shutdown_event.set()
         return
-
+    
+    poll_interval = float(config['SERIAL'].get('POLL_SERIAL_MS', '10')) / 1000.0
     recv_buffer = bytearray()
-    executor    = ThreadPoolExecutor(max_workers=5)
+    
+    logging.info("Loop principale avviato")
+    
+    # Loop principale
+    while not shutdown_event.is_set():
+        try:
+            data = serial_port.read(200)
+            if data:
+                recv_buffer.extend(data)
+                while True:
+                    frame, recv_buffer = extract_frame(recv_buffer)
+                    if not frame:
+                        break
+                    pkt = decode_sportident(frame)
+                    if not pkt:
+                        continue
+                        
+                    last_id = insert_into_db(pkt, db_config)
+                    if last_id:
+                        # Stampa informazioni su console
+                        print(f"Station (Control): {pkt['control']}")
+                        print(f"Chip number: {pkt['card_number']}")
+                        print(f"Punch time: {pkt['punch_time']}")
+                        print("-" * 20)
+                        
+                        # Invia in background
+                        executor.submit(process_record, last_id, config, session, db_config)
+                    else:
+                        logging.error("Inserimento DB fallito per %s", pkt)
+            else:
+                time.sleep(poll_interval)
+        except Exception as e:
+            logging.error("Errore loop principale: %s", e)
+            time.sleep(1)  # Evita cicli infiniti di errori
+    
+    # Chiusura risorse
+    logging.info("Chiusura risorse in corso...")
+    
+    # Chiudi seriale
+    if serial_port and serial_port.is_open:
+        serial_port.close()
+        logging.info("Porta seriale chiusa")
+    
+    # Attendi completamento tasks
+    if executor:
+        logging.info("Attesa completamento tasks...")
+        executor.shutdown(wait=True)
+        logging.info("Thread pool chiuso")
+    
+    # Chiudi sessione HTTP
+    if session:
+        session.close()
+        logging.info("Sessione HTTP chiusa")
+    
+    logging.info("Programma terminato correttamente")
 
-    while True:
-        data = ser.read(200)
-        if data:
-            recv_buffer.extend(data)
-            while True:
-                frame, recv_buffer = extract_frame(recv_buffer)
-                if not frame:
-                    break
-                pkt = decode_sportident(frame)
-                if not pkt:
-                    continue
-                last_id = insert_into_db(pkt)
-                if last_id:
-                    executor.submit(lambda rid=last_id: send_record_online(fetch_record_by_id(rid)))
-                else:
-                    logging.error("Inserimento DB fallito per %s", pkt)
-        else:
-            time.sleep(POLL_SERIAL_MS/1000.0)
+# --------------------------
+# INIT SCRIPT
+# --------------------------
+def create_service_file():
+    """Crea un file di servizio systemd"""
+    script_path = os.path.abspath(__file__)
+    service_content = f"""[Unit]
+Description=Sportident Reader Service
+After=network.target mysql.service
 
+[Service]
+User=pi
+WorkingDirectory={os.path.dirname(script_path)}
+ExecStart=/usr/bin/python3 {script_path}
+Restart=always
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=sportident
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+"""
+    
+    service_path = os.path.join(os.path.dirname(script_path), 'sportident.service')
+    with open(service_path, 'w') as f:
+        f.write(service_content)
+    
+    print(f"File di servizio creato in {service_path}")
+    print("Per installare il servizio:")
+    print(f"sudo cp {service_path} /etc/systemd/system/")
+    print("sudo systemctl daemon-reload")
+    print("sudo systemctl enable sportident.service")
+    print("sudo systemctl start sportident.service")
+
+# --------------------------
+# ENTRY POINT
+# --------------------------
 if __name__ == '__main__':
-    main_loop()
+    # Gestione argomenti
+    if len(sys.argv) > 1 and sys.argv[1] == "--create-service":
+        create_service_file()
+        sys.exit(0)
+    
+    # Configurazione iniziale
+    config = load_config()
+    setup_logging(config)
+    setup_signal_handlers()
+    
+    try:
+        main_loop(config)
+    except Exception as e:
+        logging.critical("Errore fatale: %s", e, exc_info=True)
+        sys.exit(1)
