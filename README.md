@@ -1,9 +1,12 @@
 # OriBruniRadioControls
 ## v.2.1
 
-## 29/04/2025 v2.1
+## 29/04/2025 v2.2
 ### 
-Aggiunto invio dati su interfaccia meshtastic - Da testare 
+Aggiunto invio dati su interfaccia meshtastic.  
+Test invio online OK  
+Test invio Meshtastic OK  
+Da implementare lettura meshtastic su OriBoss
 ### 
 
 ## 28/04/2025 - v1.4

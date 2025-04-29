@@ -34,6 +34,7 @@ logger.addHandler(sh)
 
 # Percorso configurazione\CONFIG_FILE = Path(os.path.expanduser('~/.config/callhome/config.ini'))
 CONFIG_VERSION = '1.1'
+CONFIG_FILE = Path(__file__).parent / 'config.ini'
 
 # Valori di default
 DEFAULT_CONFIG = {
@@ -136,32 +137,35 @@ async def get_credentials(pool):
 
 
 async def send_keepalive(session, url, name, pkey, dry_run=False):
-    metrics = collect_system_metrics()
-    payload = {
-        'name': name, 'pkey': pkey, 'action': 'keepalive',
-        'timestamp': datetime.utcnow().isoformat()+'Z',
-        'system_status': metrics, 'client_version': '3.1'
-    }
-    raw = json.dumps(payload, separators=(',',':')).encode('utf-8')
-    gz = gzip.compress(raw)
-    headers = {'Content-Encoding':'gzip','Content-Type':'application/json'}
-    if dry_run:
-        logger.info("DRY RUN - payload: %s", payload)
-        return True
-    try:
+     metrics = collect_system_metrics()
+     payload = {
+         'name': name, 'pkey': pkey, 'action': 'keepalive',
+         'timestamp': datetime.utcnow().isoformat()+'Z',
+         'system_status': metrics, 'client_version': '3.1'
+     }
+     raw = json.dumps(payload, separators=(',',':')).encode('utf-8')
+     gz = gzip.compress(raw)
+     headers = {'Content-Encoding':'gzip','Content-Type':'application/json'}
+     if dry_run:
+         logger.info("DRY RUN - payload: %s", payload)
+         return True
+     try:
+        # Log payload raw in caso di debug
+        logger.debug("Invio payload: %s", payload)
         async with session.post(url, data=gz, headers=headers, timeout=15) as resp:
             text = await resp.text()
             if resp.status == 200:
                 data = json.loads(text)
                 if data.get('status')=='success':
-                    logger.info("Keepalive OK: %s", data.get('message',''))
-                    return True
-                logger.warning("Server risponde OK ma status!='success': %s", data)
+                   logger.info("Keepalive OK: %s", data.get('message',''))
+                   return True
+                logger.warning("Server risponde OK ma status!='success': %s – payload era %s", data, payload)
                 return False
-            logger.error("HTTP %d: %s", resp.status, text)
-    except Exception as e:
-        logger.error("Errore richiesta HTTP: %s", e)
-    return False
+             # qui c’è stato un errore HTTP
+            logger.error("HTTP %d: %s – payload inviato: %s", resp.status, text, payload)
+     except Exception as e:
+        logger.error("Errore richiesta HTTP: %s – payload inviato: %s", e, payload)
+     return False
 
 
 async def main():

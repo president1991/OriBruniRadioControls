@@ -158,26 +158,33 @@ def create_mesh_session(config):
     if mesh_iface:
         try: mesh_iface.close()
         except: pass
+    # SerialInterface ora prende solo devPath; il baud viene gestito internamente (default 115200)
     port = config['MESHTASTIC']['PORT']
-    baud = int(config['MESHTASTIC'].get('BAUDRATE', '9600'))
-    mesh_iface = meshtastic.serial_interface.SerialInterface(port, baud)
+    mesh_iface = meshtastic.serial_interface.SerialInterface(devPath=port)
     return mesh_iface
 
 # --------------------------
 # PARSING SPORTIDENT
 # --------------------------
 def remove_dle(data: bytes) -> bytes:
-    """Rimuove caratteri DLE dalla sequenza di byte"""
+    """
+    Rimuove solo gli escape DLE validi:
+      - 0x10 0x10 -> 0x10
+      - 0x10 0x02 -> 0x02
+      - 0x10 0x03 -> 0x03
+    Tutti gli altri 0x10 vengono lasciati nel payload.
+    """
     result = bytearray()
-    skip = False
-    for b in data:
-        if skip:
-            result.append(b)
-            skip = False
-        elif b == 0x10:
-            skip = True
+    i = 0
+    while i < len(data):
+        b = data[i]
+        # se incontriamo DLE e il byte successivo è uno dei tre escapati
+        if b == 0x10 and i + 1 < len(data) and data[i+1] in (0x10, 0x02, 0x03):
+            result.append(data[i+1])
+            i += 2
         else:
             result.append(b)
+            i += 1
     return bytes(result)
 
 class SportidentTimeAdapter(Adapter):
@@ -240,14 +247,18 @@ def extract_frame(buffer: bytearray):
     if frame[-1] != 0x03:
         logging.error("Frame errato: %s", frame.hex())
         return None, newbuf
-    return frame, newbuf
+    return frame, newbuf    
 
 def decode_sportident(raw: bytes):
+    # Assicurati che il frame inizi con STX (0x02) e termini con ETX (0x03)
     if not (raw.startswith(b"\x02") and raw.endswith(b"\x03")):
+        logging.error("Frame non completo (mancano STX/ETX): %s", raw.hex())
         return None
-    body = remove_dle(raw[1:-1])
+    # Rimuovi i DLE (escaping) ma mantieni STX/ETX per il parser
     try:
-        p = SiPacket.parse(body)
+        clean_frame = remove_dle(raw)
+        # parse sul frame completo
+        p = SiPacket.parse(clean_frame)
         secs = convert_extended_time(p.Td, p.ThTl, p.Tsubsec)
         base = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
         dt = base + timedelta(seconds=secs)
@@ -258,7 +269,8 @@ def decode_sportident(raw: bytes):
             'raw_punch_data': raw.hex()
         }
     except Exception as e:
-        logging.error("Parse error: %s", e)
+        # Mostra l'errore di parsing e il frame grezzo in esadecimale
+        logging.error("Parse error: %s — raw frame: %s", e, raw.hex())
         return None
 
 # --------------------------
@@ -387,9 +399,10 @@ def send_record_on_mesh(record, name, pkey, config, mesh_iface):
     topic = config['MESHTASTIC'].get('TOPIC', '') or None
     want_ack = config['MESHTASTIC'].getboolean('ACK', True)
     try:
+        # non passiamo più "topic" come destinazione, così non viene
+        # interpretato come un intero e non genera errori di parsing
         mesh_iface.sendText(
             json.dumps(payload),
-            topic_name=topic,
             wantAck=want_ack
         )
         logging.info("Inviato su Meshtastic id=%s", record['id'])
@@ -405,18 +418,21 @@ def send_record_online(record, config, session, db_config):
     """Invia un record al servizio online e su Meshtastic"""
     if not record:
         return False
+
     record_id = record.get('id')
     name, pkey = get_device_identifiers(db_config)
     if not name or not pkey:
         logging.error("Device IDs mancanti per %s", record_id)
         return False
-    # Prepara payload HTTP
+
+    # Prepara payload HTTP con datetime compatibili MySQL (no T, no frazioni)
     punch_time = record['punch_time']
     timestamp = record['timestamp']
     if isinstance(punch_time, datetime):
-        punch_time = punch_time.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+        punch_time = punch_time.strftime('%Y-%m-%d %H:%M:%S')
     if isinstance(timestamp, datetime):
-        timestamp = timestamp.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+        timestamp = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+
     payload = {
         'name': name,
         'pkey': pkey,
@@ -424,28 +440,54 @@ def send_record_online(record, config, session, db_config):
         'control': record['control'],
         'card_number': record['card_number'],
         'punch_time': punch_time,
-        'timestamp': timestamp
+        'timestamp': timestamp,
+        'raw_punch_data': record.get('raw_punch_data')
     }
+
+    # 1) Invio HTTP e gestione errori di connessione/status
     try:
-        resp = session.post(config['REMOTE'].get('URL'), json=payload,
-                             timeout=int(config['REMOTE'].get('TIMEOUT', '5')))
+        resp = session.post(
+            config['REMOTE']['URL'],
+            json=payload,
+            timeout=int(config['REMOTE'].get('TIMEOUT', '5'))
+        )
         resp.raise_for_status()
-        data = resp.json()
-        if data.get('status') == 'success':
-            logging.info("Inviato online id=%s", record_id)
-            mark_record_as_sent(record_id, db_config)
-            log_event(name, 'Successo', f'id={record_id}', db_config)
-        else:
-            logging.error("Errore invio %s: %s", record_id, data)
-            log_event(name, 'Errore Invio', str(data), db_config)
     except requests.RequestException as e:
-        logging.error("HTTP error %s: %s", record_id, e)
-        log_event(name, 'Errore Connessione', str(e), db_config)
-    # Invia anche su Meshtastic
+        msg = str(e)
+        logging.error("HTTP error %s: %s", record_id, msg)
+        log_event(name, 'Errore Connessione', msg[:200], db_config)
+        return False
+
+    # 2) Parsing JSON con fallback
+    try:
+        data = resp.json()
+    except ValueError:
+        text = resp.text.strip().replace('\n', ' ')
+        logging.error("Invalid JSON for id %s: %r", record_id, text)
+        log_event(name, 'Errore JSON', text[:200], db_config)
+        return False
+
+    # 3) Verifica status nel JSON
+    if data.get('status') == 'success':
+        logging.info("Inviato online id=%s", record_id)
+        mark_record_as_sent(record_id, db_config)
+        log_event(name, 'Successo', f'id={record_id}', db_config)
+    else:
+        errtxt = str(data)[:200]
+        logging.error("Errore invio %s: %s", record_id, data)
+        log_event(name, 'Errore Invio', errtxt, db_config)
+
+    return True
+
+def send_record_mesh(record, config, mesh_iface, db_config):
+    """Invia un record solo su Meshtastic, indipendentemente dall'online."""
+    name, pkey = get_device_identifiers(db_config)
+    if not mesh_iface or not record or not name or not pkey:
+        return False
     try:
         send_record_on_mesh(record, name, pkey, config, mesh_iface)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.error("Errore invio Mesh (task dedicato) %s: %s", record['id'], e)
     return True
 
 # --------------------------
@@ -453,8 +495,14 @@ def send_record_online(record, config, session, db_config):
 # --------------------------
 def process_record(record_id, config, session, db_config):
     record = fetch_record_by_id(record_id, db_config)
-    if record:
-        send_record_online(record, config, session, db_config)
+    if not record:
+        return
+
+    # Task 1: invio HTTP
+    executor.submit(send_record_online, record, config, session, db_config)
+
+    # Task 2: invio su Meshtastic (indipendente)
+    executor.submit(send_record_mesh, record, config, mesh_iface, db_config)
 
 # --------------------------
 # MONITORAGGIO SISTEMA
@@ -488,33 +536,6 @@ def check_system_health():
 # --------------------------
 # KEEP ALIVE E WATCHDOG
 # --------------------------
-def keep_alive_task(config, db_config):
-    if shutdown_event.is_set():
-        return
-    try:
-        name, pkey = get_device_identifiers(db_config)
-        health = check_system_health()
-        payload = {
-            'name': name,
-            'pkey': pkey,
-            'action': 'keepalive',
-            'timestamp': datetime.now().strftime('%Y-%m-%dT%H:%M:%S.%fZ'),
-            'system_status': health
-        }
-        remote_url = config['REMOTE'].get('URL').replace('receive_data.php', 'keepalive.php')
-        resp = session.post(remote_url, json=payload,
-                             timeout=int(config['REMOTE'].get('TIMEOUT', '5')))
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get('status') == 'success':
-            logging.debug("Keep-alive inviato con successo")
-        else:
-            logging.warning("Errore keep-alive: %s", data)
-    except Exception as e:
-        logging.error("Errore keep-alive: %s", e)
-    if not shutdown_event.is_set():
-        interval = int(config['RASPBERRY'].get('KEEP_ALIVE_INTERVAL', '300'))
-        threading.Timer(interval, keep_alive_task, args=[config, db_config]).start()
 
 def retry_unsent_records(config, db_config):
     if shutdown_event.is_set():
@@ -574,7 +595,6 @@ def main_loop(config):
     optimize_raspberry_pi(config)
     max_workers = int(config['EXECUTION'].get('MAX_WORKERS', '3'))
     executor = ThreadPoolExecutor(max_workers=max_workers)
-    threading.Timer(10, keep_alive_task, args=[config, db_config]).start()
     threading.Timer(30, retry_unsent_records, args=[config, db_config]).start()
     try:
         port = config['SERIAL']['PORT']
