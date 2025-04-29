@@ -1,185 +1,205 @@
 #!/usr/bin/env python3
 """
-callhome.py v2.0
-Invia periodicamente un POST JSON a callhome.php con keepalive e metriche di sistema.
+callhome.py v3.1 - completo
+Invia periodicamente un POST JSON compresso a callhome.php con keepalive e metriche di sistema.
+Include gestione errori avanzata, configurazione esterna con versioning, rotating logs, dry-run, backoff, asyncio/AIOHTTP.
 """
-import mysql.connector
-import requests
+import asyncio
 import time
-import psutil
+import os
 import json
+import gzip
+import logging
+from logging.handlers import RotatingFileHandler
 from datetime import datetime
+from pathlib import Path
+import configparser
+import random
+import psutil
+import aiomysql
+import aiohttp
 
-# Configurazione DB
-db_config = {
-    'user': 'root',
-    'password': 'PuhA7gWCrW',
-    'host': 'localhost',
-    'database': 'OriBruniRadioControls',
-    'autocommit': True
+# Configurazione logging con rotazione
+logger = logging.getLogger("callhome")
+logger.setLevel(logging.INFO)
+fmt = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+# Rotating file handler
+fh = RotatingFileHandler('callhome.log', maxBytes=10_000_000, backupCount=5)
+fh.setFormatter(fmt)
+# Stream handler
+sh = logging.StreamHandler()
+sh.setFormatter(fmt)
+logger.addHandler(fh)
+logger.addHandler(sh)
+
+# Percorso configurazione\CONFIG_FILE = Path(os.path.expanduser('~/.config/callhome/config.ini'))
+CONFIG_VERSION = '1.1'
+
+# Valori di default
+DEFAULT_CONFIG = {
+    'meta': {'config_version': CONFIG_VERSION},
+    'database': {
+        'host': 'localhost',
+        'port': '3306',
+        'user': 'root',
+        'password': 'PuhA7gWCrW',
+        'database': 'OriBruniRadioControls',
+        'autocommit': 'True'
+    },
+    'callhome': {
+        'url': 'https://orienteering.services/radiocontrol/callhome.php',
+        'poll_interval': '20',
+        'cred_check_interval': '3600',
+        'max_retries': '5',
+        'dry_run': 'False'
+    }
 }
 
-# Endpoint keepalive
-url = "https://orienteering.services/radiocontrol/callhome.php"
 
-# Intervallo di polling in secondi 
-POLL_INTERVAL = 5
-
-
-def crea_connessione_db():
-    try:
-        print(f"[INFO] Connessione al database {db_config['database']}...")
-        conn = mysql.connector.connect(**db_config)
-        print(f"[OK] Connessione al database stabilita")
-        return conn
-    except mysql.connector.Error as err:
-        print(f"[ERR] Errore connessione DB: {err}")
-        return None
-
-
-def leggi_credentials(cursor):
-    """Recupera nome e pkey dalla tabella costanti"""
-    try:
-        print("[INFO] Lettura credenziali dalla tabella costanti...")
-        cursor.execute("""
-            SELECT nome, valore
-            FROM costanti
-            WHERE nome IN ('nome', 'pkey')
-            ORDER BY nome
-        """)
-        risultati = cursor.fetchall()
-        if len(risultati) == 2:
-            vals = {r[0]: r[1] for r in risultati}
-            nome = vals['nome']
-            pkey = vals['pkey']
-            print(f"[OK] Credenziali trovate - nome: {nome}, pkey: {pkey[:5]}***")
-            return nome, pkey
-        else:
-            trovati = [r[0] for r in risultati] if risultati else []
-            print(f"[WARN] Costanti incomplete - trovate: {trovati}, mancanti: {'nome' if 'nome' not in trovati else ''} {'pkey' if 'pkey' not in trovati else ''}")
-            return None, None
-    except mysql.connector.Error as err:
-        print(f"[ERR] Errore lettura credenziali: {err}")
-        return None, None
+def load_config():
+    """Carica o crea config con versioning"""
+    cfg = configparser.ConfigParser()
+    if not CONFIG_FILE.exists():
+        cfg.read_dict(DEFAULT_CONFIG)
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(CONFIG_FILE, 'w') as f:
+            cfg.write(f)
+        logger.info(f"Creato file di configurazione: {CONFIG_FILE}")
+    else:
+        cfg.read(CONFIG_FILE)
+        if not cfg.has_section('meta') or cfg.get('meta','config_version', fallback='') != CONFIG_VERSION:
+            # migra aggiungendo nuove sezioni/chiavi senza sovrascrivere
+            for sec, opts in DEFAULT_CONFIG.items():
+                if not cfg.has_section(sec):
+                    cfg[sec] = opts
+                else:
+                    for k, v in opts.items():
+                        if not cfg.has_option(sec, k):
+                            cfg.set(sec, k, v)
+            cfg['meta'] = {'config_version': CONFIG_VERSION}
+            with open(CONFIG_FILE, 'w') as f:
+                cfg.write(f)
+            logger.info("File di configurazione aggiornato alla versione %s", CONFIG_VERSION)
+    return cfg
 
 
-def check_system_health():
+def collect_system_metrics():
     """Raccoglie metriche di sistema"""
-    print("[INFO] Raccolta metriche di sistema...")
-    cpu = psutil.cpu_percent(interval=1)
-    mem = psutil.virtual_memory().percent
-    disk = psutil.disk_usage('/').percent
-    temp = None
-    # Prova a leggere temperatura su Raspberry Pi
+    metrics = {}
     try:
-        with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
-            temp = float(f.read()) / 1000.0
+        metrics['cpu_percent'] = psutil.cpu_percent(interval=0.5)
+        vm = psutil.virtual_memory()
+        metrics['memory_percent'] = vm.percent
+        metrics['memory_available_mb'] = round(vm.available / (1024*1024),2)
+        du = psutil.disk_usage('/')
+        metrics['disk_percent'] = du.percent
+        metrics['disk_free_gb'] = round(du.free/(1024*1024*1024),2)
+        # uptime
+        uptime_s = time.time() - psutil.boot_time()
+        metrics['uptime_hours'] = round(uptime_s/3600,2)
+        # load avg su Linux
+        if hasattr(psutil, 'getloadavg'):
+            la1, la5, la15 = psutil.getloadavg()
+            metrics['load_avg_1m'] = round(la1,2)
+        metrics['process_count'] = len(psutil.pids())
+        # temperatura
+        temps = psutil.sensors_temperatures() if hasattr(psutil, 'sensors_temperatures') else {}
+        for entries in temps.values():
+            if entries:
+                metrics['temperature'] = round(entries[0].current,1)
+                break
     except Exception as e:
-        print(f"[WARN] Impossibile leggere temperatura: {e}")
-    
-    metrics = {
-        'cpu_percent': cpu,
-        'memory_percent': mem,
-        'disk_percent': disk,
-        'temperature': temp
-    }
-    print(f"[INFO] Metriche: CPU {cpu}%, MEM {mem}%, DISK {disk}%, TEMP {temp if temp else 'N/A'}")
+        logger.warning("Errore metriche sistema: %s", e)
     return metrics
 
 
-def invia_keepalive(session, nome, pkey):
-    """Invia POST JSON con keepalive e metriche al server"""
-    print(f"\n[INFO] Preparazione keepalive per dispositivo '{nome}'...")
-    system_metrics = check_system_health()
-    
+async def create_db_pool(cfg):
+    db = cfg['database']
+    pool = await aiomysql.create_pool(
+        host=db.get('host'), port=int(db.get('port')),
+        user=db.get('user'), password=db.get('password'),
+        db=db.get('database'), autocommit=db.getboolean('autocommit')
+    )
+    return pool
+
+
+async def get_credentials(pool):
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                SELECT nome, valore FROM costanti
+                WHERE nome IN ('nome','pkey')
+            """)
+            rows = await cur.fetchall()
+    creds = {r[0]:r[1] for r in rows}
+    return creds.get('nome'), creds.get('pkey')
+
+
+async def send_keepalive(session, url, name, pkey, dry_run=False):
+    metrics = collect_system_metrics()
     payload = {
-        'name': nome,
-        'pkey': pkey,
-        'action': 'keepalive',
-        'timestamp': datetime.utcnow().isoformat() + 'Z',
-        'system_status': system_metrics
+        'name': name, 'pkey': pkey, 'action': 'keepalive',
+        'timestamp': datetime.utcnow().isoformat()+'Z',
+        'system_status': metrics, 'client_version': '3.1'
     }
-    
-    print(f"[INFO] Invio keepalive a {url}...")
-    print(f"[DEBUG] Payload: {json.dumps({k: v if k != 'pkey' else '***' for k, v in payload.items()}, indent=2)}")
-    
+    raw = json.dumps(payload, separators=(',',':')).encode('utf-8')
+    gz = gzip.compress(raw)
+    headers = {'Content-Encoding':'gzip','Content-Type':'application/json'}
+    if dry_run:
+        logger.info("DRY RUN - payload: %s", payload)
+        return True
     try:
-        start_time = time.time()
-        resp = session.post(url, json=payload, timeout=10)
-        elapsed = time.time() - start_time
-        
-        print(f"[INFO] Risposta ricevuta in {elapsed:.2f}s - Status: {resp.status_code}")
-        
-        resp.raise_for_status()
-        try:
-            data = resp.json()
-            print(f"[DEBUG] Risposta JSON: {json.dumps(data, indent=2)}")
-            
-            if data.get('status') == 'success':
-                print(f"[OK] Keepalive inviato con successo! {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            else:
-                print(f"[WARN] Risposta server non attesa: {data}")
-        except json.JSONDecodeError:
-            print(f"[WARN] Risposta non JSON: {resp.text[:100]}")
-    except requests.RequestException as e:
-        print(f"[ERR] Keepalive fallito: {e}")
-        print(f"[DEBUG] Dettagli errore: {str(e)}")
-
-
-def main_loop():
-    print(f"\n{'='*60}")
-    print(f"AVVIO CALLHOME v2.0 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'='*60}\n")
-    
-    try:
-        conn = crea_connessione_db()
-        if not conn:
-            print("[ERR] Impossibile continuare senza connessione al database")
-            return
-            
-        cursor = conn.cursor()
-        
-        print("[INFO] Inizializzazione sessione HTTP...")
-        session = requests.Session()
-        session.headers.update({
-            'User-Agent': 'OriBruniClient/2.0',
-            'Accept': 'application/json',
-            'Content-Type': 'application/json',
-            'Connection': 'keep-alive',
-            'Accept-Encoding': 'gzip'
-        })
-        print(f"[INFO] Headers HTTP: {json.dumps(dict(session.headers), indent=2)}")
-
-        count = 0
-        print(f"\n[INFO] Avvio ciclo principale con intervallo di {POLL_INTERVAL} secondi")
-        print(f"{'='*60}")
-        
-        while True:
-            count += 1
-            print(f"\n[INFO] Ciclo #{count} - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            
-            nome, pkey = leggi_credentials(cursor)
-            if nome and pkey:
-                invia_keepalive(session, nome, pkey)
-            else:
-                print("[ERR] Credenziali non disponibili, skip keepalive")
-                
-            print(f"[INFO] In attesa {POLL_INTERVAL} secondi...")
-            print(f"{'- '*30}")
-            time.sleep(POLL_INTERVAL)
-            
-    except KeyboardInterrupt:
-        print("\n[INFO] Programma interrotto manualmente")
-    except mysql.connector.Error as err:
-        print(f"\n[ERR] Errore database: {err}")
+        async with session.post(url, data=gz, headers=headers, timeout=15) as resp:
+            text = await resp.text()
+            if resp.status == 200:
+                data = json.loads(text)
+                if data.get('status')=='success':
+                    logger.info("Keepalive OK: %s", data.get('message',''))
+                    return True
+                logger.warning("Server risponde OK ma status!='success': %s", data)
+                return False
+            logger.error("HTTP %d: %s", resp.status, text)
     except Exception as e:
-        print(f"\n[ERR] Errore imprevisto: {e}")
-        import traceback
-        print(f"[DEBUG] Traceback: {traceback.format_exc()}")
-        print("[INFO] Riavvio tra 60 secondi...")
-        time.sleep(60)  # Attendi prima di riavviare in caso di errore
-        main_loop()  # Riavvia il loop principale
+        logger.error("Errore richiesta HTTP: %s", e)
+    return False
 
 
-if __name__ == '__main__':
-    main_loop()
+async def main():
+    cfg = load_config()
+    ch = cfg['callhome']
+    url = ch.get('url')
+    poll = ch.getint('poll_interval')
+    cred_interval = ch.getint('cred_check_interval')
+    dry_run = ch.getboolean('dry_run')
+    failure_count = 0
+
+    pool = await create_db_pool(cfg)
+    async with aiohttp.ClientSession() as session:
+        name = None; pkey = None; last_cred = 0
+        while True:
+            now = time.time()
+            # aggiorna credenziali
+            if not name or (now-last_cred)>=cred_interval:
+                name, pkey = await get_credentials(pool)
+                last_cred = now
+                if not name or not pkey:
+                    logger.warning("Credenziali mancanti, aspetto %ds", poll)
+                    await asyncio.sleep(poll)
+                    continue
+            success = await send_keepalive(session, url, name, pkey, dry_run)
+            # backoff su errori
+            if success:
+                failure_count=0; interval=poll
+            else:
+                failure_count+=1
+                interval = min(poll*(2**failure_count), poll*10)
+                logger.info("Prossimo tentativo in %ds (failure_count=%d)", interval, failure_count)
+            await asyncio.sleep(interval)
+
+if __name__=='__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Terminato dall'utente")
+    except Exception as e:
+        logger.critical("Errore critico: %s", e, exc_info=True)
