@@ -14,4 +14,5 @@ Modifica per ridurre il consumo di dati
 
 ## 22/04/2025 - v1.3
 Aggiunta riduzione consumo dati mobili
+#
 Verifica funzionamento script per lettura SIAC anche in modalità AIR+
