@@ -1,6 +1,6 @@
 # OriBruniRadioControls
-## v.2.1
-
+## v.2.2.2
+Modifiche minori
 ## 29/04/2025 v2.2
 ### 
 Aggiunto invio dati su interfaccia meshtastic.  
