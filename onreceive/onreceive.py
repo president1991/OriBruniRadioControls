@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Script di esempio per ricevere pacchetti Meshtastic leggendo la configurazione da config.ini
+Script per ricevere pacchetti Meshtastic leggendo la configurazione da config.ini
+e salvare i dati in un file CSV
 """
 import meshtastic
 import meshtastic.serial_interface
@@ -10,6 +11,9 @@ import configparser
 import logging
 import sys
 import time
+import csv
+import os
+from datetime import datetime
 
 # Carica configurazione
 config = configparser.ConfigParser()
@@ -41,11 +45,48 @@ if config.has_section('FILTER'):
     topic_filter = config.get('FILTER', 'TOPIC', fallback='').strip() or None
     log_file = config.get('FILTER', 'LOG_FILE', fallback='').strip() or None
 
+# Sezione CSV
+csv_file = 'punzonature.csv'
+csv_enabled = True
+if config.has_section('CSV'):
+    csv_file = config.get('CSV', 'FILE', fallback=csv_file)
+    csv_enabled = config.getboolean('CSV', 'ENABLED', fallback=True)
+    
+# Se CSV è disattivato, lo segnaliamo
+if not csv_enabled:
+    logging.info("Scrittura CSV disabilitata da configurazione")
+    
+# Directory per i file CSV (crea se non esiste)
+if csv_enabled:
+    csv_directory = os.path.dirname(csv_file)
+    if csv_directory and not os.path.exists(csv_directory):
+        os.makedirs(csv_directory)
+
 # Se imposta un file di log separato
 if log_file:
     file_handler = logging.FileHandler(log_file)
     file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
     logging.getLogger().addHandler(file_handler)
+
+# Verifica se il file CSV esiste già
+csv_exists = os.path.isfile(csv_file)
+
+# Creazione o apertura del file CSV per scrittura
+def get_csv_writer():
+    """Crea un nuovo writer CSV o ritorna uno esistente"""
+    csv_exists = os.path.isfile(csv_file)
+    file_mode = 'a' if csv_exists else 'w'  # Append se esiste, Write se nuovo
+    
+    csv_file_handler = open(csv_file, mode=file_mode, newline='')
+    writer = csv.writer(csv_file_handler)
+    
+    # Scrivi intestazioni se è un nuovo file
+    if not csv_exists:
+        headers = ['timestamp', 'source_id', 'topic', 'device_time', 'device_name', 'punzonatura_id', 'extra_data']
+        writer.writerow(headers)
+        logging.info(f"Creato nuovo file CSV: {csv_file}")
+    
+    return writer, csv_file_handler
 
 # Callback per i pacchetti ricevuti (solo TEXT_MESSAGE_APP)
 def on_receive(packet, interface=None):
@@ -58,29 +99,87 @@ def on_receive(packet, interface=None):
         return
 
     payload = decoded.get('payload')
-    topic = packet.get('topic')
-    ts = packet.get('time')
-    src = packet.get('from')
-
+    topic = packet.get('topic', 'unknown')
+    device_time = packet.get('time', 0)
+    src = packet.get('from', 'unknown')
+    
+    # Converte il timestamp in formato leggibile
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
     # Filtro per topic
     if topic_filter and topic != topic_filter:
         return
 
-    # Se c'è payload JSON
-    if payload:
-        try:
-            raw = payload.decode() if isinstance(payload, (bytes, bytearray)) else payload
-            data = json.loads(raw)
-            logging.info(f"[{src}] TOPIC={topic} TIME={ts}")
-            for k, v in data.items():
-                logging.info(f"  {k}: {v}")
-        except Exception:
-            logging.info(f"[{src}] PAYLOAD non JSON: {payload}")
-    # Fallback su testo plain
-    elif packet.get('text'):
-        logging.info(f"[{src}] RAW: {packet.get('text')}")
-    else:
-        logging.info(f"[{src}] PACKET: {packet}")
+    # Se l'opzione CSV è disabilitata, procedi solo con il logging
+    writer = None
+    file_handler = None
+    if csv_enabled:
+        # Apre il file CSV per scrittura
+        writer, file_handler = get_csv_writer()
+    
+    try:
+        # Se c'è payload JSON
+        if payload:
+            try:
+                raw = payload.decode() if isinstance(payload, (bytes, bytearray)) else payload
+                data = json.loads(raw)
+                
+                # Log normale
+                logging.info(f"[{src}] TOPIC={topic} TIME={device_time}")
+                for k, v in data.items():
+                    logging.info(f"  {k}: {v}")
+                
+                # Estrai il nome del dispositivo e ID punzonatura se disponibili
+                device_name = data.get('name', 'unknown')
+                punzonatura_id = data.get('id', 'unknown')
+                
+                # Salva su CSV se abilitato
+                if csv_enabled:
+                    # Crea un dizionario con tutti i dati extra
+                    extra_data = {k: v for k, v in data.items() if k not in ['name', 'id']}
+                    extra_json = json.dumps(extra_data) if extra_data else '{}'
+                    
+                    # Scrivi su CSV
+                    writer.writerow([
+                        timestamp,
+                        src,
+                        topic,
+                        device_time,
+                        device_name,
+                        punzonatura_id,
+                        extra_json
+                    ])
+                    
+                    logging.info(f"Salvata punzonatura nel CSV: {punzonatura_id} da {device_name}")
+                
+            except json.JSONDecodeError:
+                # Non è JSON, salva come testo semplice
+                raw_text = payload.decode() if isinstance(payload, (bytes, bytearray)) else str(payload)
+                if csv_enabled:
+                    writer.writerow([timestamp, src, topic, device_time, 'unknown', 'unknown', raw_text])
+                logging.info(f"[{src}] PAYLOAD non JSON: {raw_text}")
+        
+        # Fallback su testo plain
+        elif packet.get('text'):
+            text = packet.get('text')
+            if csv_enabled:
+                writer.writerow([timestamp, src, topic, device_time, 'unknown', 'unknown', text])
+            logging.info(f"[{src}] RAW: {text}")
+        
+        else:
+            packet_str = str(packet)
+            if csv_enabled:
+                writer.writerow([timestamp, src, topic, device_time, 'unknown', 'unknown', packet_str])
+            logging.info(f"[{src}] PACKET: {packet_str}")
+    
+    except Exception as e:
+        logging.error(f"Errore durante l'elaborazione del pacchetto: {e}")
+    
+    finally:
+        # Chiudi il file per assicurarsi che i dati vengano scritti
+        if csv_enabled and file_handler:
+            file_handler.flush()
+            file_handler.close()
 
 
 def main():
@@ -94,7 +193,12 @@ def main():
     # Sottoscrivi il callback per i messaggi ricevuti
     pub.subscribe(on_receive, 'meshtastic.receive')
 
-    print("In ascolto di messaggi. Ctrl+C per uscire.")
+    if csv_enabled:
+        print(f"In ascolto di messaggi. Le punzonature verranno salvate in {csv_file}")
+    else:
+        print("In ascolto di messaggi. Registrazione CSV disabilitata.")
+    print("Ctrl+C per uscire.")
+    
     try:
         while True:
             time.sleep(1)
