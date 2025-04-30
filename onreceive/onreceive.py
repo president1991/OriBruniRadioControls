@@ -82,7 +82,17 @@ def get_csv_writer():
     
     # Scrivi intestazioni se è un nuovo file
     if not csv_exists:
-        headers = ['timestamp', 'source_id', 'topic', 'device_time', 'device_name', 'punzonatura_id', 'extra_data']
+        headers = [
+            'timestamp',          # Timestamp locale del server
+            'source_id',          # ID del dispositivo Meshtastic
+            'topic',              # Topic del messaggio
+            'device_time',        # Timestamp dal dispositivo
+            'sicard_id',          # ID del chip/card SiCard
+            'station_code',       # Codice della stazione di punzonatura
+            'punch_time',         # Orario della punzonatura
+            'device_name',        # Nome del dispositivo
+            'extra_data'          # Altri dati in JSON
+        ]
         writer.writerow(headers)
         logging.info(f"Creato nuovo file CSV: {csv_file}")
     
@@ -129,14 +139,20 @@ def on_receive(packet, interface=None):
                 for k, v in data.items():
                     logging.info(f"  {k}: {v}")
                 
-                # Estrai il nome del dispositivo e ID punzonatura se disponibili
+                # Estrai i dati specifici per la punzonatura
                 device_name = data.get('name', 'unknown')
-                punzonatura_id = data.get('id', 'unknown')
+                
+                # Estrai campi specifici per SiCard (sportident)
+                sicard_id = data.get('sicard_id', data.get('card_id', data.get('chip_id', 'unknown')))
+                station_code = data.get('station_code', data.get('station_id', data.get('control_code', 'unknown')))
+                punch_time = data.get('punch_time', data.get('time', device_time))
                 
                 # Salva su CSV se abilitato
                 if csv_enabled:
                     # Crea un dizionario con tutti i dati extra
-                    extra_data = {k: v for k, v in data.items() if k not in ['name', 'id']}
+                    extra_fields = ['name', 'sicard_id', 'card_id', 'chip_id', 'station_code', 
+                                   'station_id', 'control_code', 'punch_time', 'time']
+                    extra_data = {k: v for k, v in data.items() if k not in extra_fields}
                     extra_json = json.dumps(extra_data) if extra_data else '{}'
                     
                     # Scrivi su CSV
@@ -145,31 +161,33 @@ def on_receive(packet, interface=None):
                         src,
                         topic,
                         device_time,
+                        sicard_id,
+                        station_code,
+                        punch_time,
                         device_name,
-                        punzonatura_id,
                         extra_json
                     ])
                     
-                    logging.info(f"Salvata punzonatura nel CSV: {punzonatura_id} da {device_name}")
+                    logging.info(f"Salvata punzonatura nel CSV: SiCard {sicard_id}, Stazione {station_code}")
                 
             except json.JSONDecodeError:
                 # Non è JSON, salva come testo semplice
                 raw_text = payload.decode() if isinstance(payload, (bytes, bytearray)) else str(payload)
                 if csv_enabled:
-                    writer.writerow([timestamp, src, topic, device_time, 'unknown', 'unknown', raw_text])
+                    writer.writerow([timestamp, src, topic, device_time, 'unknown', 'unknown', 'unknown', 'unknown', raw_text])
                 logging.info(f"[{src}] PAYLOAD non JSON: {raw_text}")
         
         # Fallback su testo plain
         elif packet.get('text'):
             text = packet.get('text')
             if csv_enabled:
-                writer.writerow([timestamp, src, topic, device_time, 'unknown', 'unknown', text])
+                writer.writerow([timestamp, src, topic, device_time, 'unknown', 'unknown', 'unknown', 'unknown', text])
             logging.info(f"[{src}] RAW: {text}")
         
         else:
             packet_str = str(packet)
             if csv_enabled:
-                writer.writerow([timestamp, src, topic, device_time, 'unknown', 'unknown', packet_str])
+                writer.writerow([timestamp, src, topic, device_time, 'unknown', 'unknown', 'unknown', 'unknown', packet_str])
             logging.info(f"[{src}] PACKET: {packet_str}")
     
     except Exception as e:
