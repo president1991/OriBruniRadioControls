@@ -1,5 +1,8 @@
 # OriBruniRadioControls
-## v.2.2.2
+## 30/04/2025 v2.5
+###
+Aggiunta esportazione csv.  
+Agginto log su file separato.  
 Modifiche minori
 ## 29/04/2025 v2.2
 ### 
