@@ -1,4 +1,9 @@
 # OriBruniRadioControls
+## 04/05/2025 v2.6
+Modifica script per fare in modo che se anche le porte usb vengono scambiate le porte seriali si aprano correttamente.  
+Aggiunta illuminazione led e segnale acustico all'avvio del punto radio.  
+Controlli e verifiche funzionamento.  
+
 ## 30/04/2025 v2.5
 ###
 Aggiunta esportazione csv.  

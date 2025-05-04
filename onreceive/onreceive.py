@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Script per ricevere pacchetti Meshtastic leggendo la configurazione da config.ini
-e salvare i dati in un file CSV
+e salvare i dati di punzonatura in un file CSV
 """
 import meshtastic
 import meshtastic.serial_interface
@@ -98,6 +98,15 @@ def get_csv_writer():
     
     return writer, csv_file_handler
 
+def receive_packet():
+    """
+    Funzione wrapper che gestisce la ricezione dei pacchetti da Meshtastic.
+    Utilizzato per mantenere compatibilità con il codice originale.
+    """
+    # Questa funzione non viene utilizzata direttamente, dal momento che utilizziamo
+    # i callback di Meshtastic, ma esiste per documentazione e possibile uso futuro
+    raise NotImplementedError("Questa funzione non viene utilizzata direttamente - i pacchetti sono gestiti via callback")
+
 # Callback per i pacchetti ricevuti (solo TEXT_MESSAGE_APP)
 def on_receive(packet, interface=None):
     """
@@ -109,9 +118,9 @@ def on_receive(packet, interface=None):
         return
 
     payload = decoded.get('payload')
-    topic = packet.get('topic', 'unknown')
-    device_time = packet.get('time', 0)
-    src = packet.get('from', 'unknown')
+    topic = packet.get('topic', '')
+    device_time = packet.get('time', '')
+    src = packet.get('from', '')
     
     # Converte il timestamp in formato leggibile
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -132,62 +141,94 @@ def on_receive(packet, interface=None):
         if payload:
             try:
                 raw = payload.decode() if isinstance(payload, (bytes, bytearray)) else payload
-                data = json.loads(raw)
                 
-                # Log normale
-                logging.info(f"[{src}] TOPIC={topic} TIME={device_time}")
-                for k, v in data.items():
-                    logging.info(f"  {k}: {v}")
-                
-                # Estrai i dati specifici per la punzonatura
-                device_name = data.get('name', 'unknown')
-                
-                # Estrai campi specifici per SiCard (sportident)
-                sicard_id = data.get('sicard_id', data.get('card_id', data.get('chip_id', 'unknown')))
-                station_code = data.get('station_code', data.get('station_id', data.get('control_code', 'unknown')))
-                punch_time = data.get('punch_time', data.get('time', device_time))
-                
-                # Salva su CSV se abilitato
-                if csv_enabled:
-                    # Crea un dizionario con tutti i dati extra
-                    extra_fields = ['name', 'sicard_id', 'card_id', 'chip_id', 'station_code', 
-                                   'station_id', 'control_code', 'punch_time', 'time']
-                    extra_data = {k: v for k, v in data.items() if k not in extra_fields}
-                    extra_json = json.dumps(extra_data) if extra_data else '{}'
+                # Parse del JSON - versione migliorata dal primo script
+                if raw and raw.strip().startswith('{'):
+                    try:
+                        data = json.loads(raw)
+                        
+                        # Log normale
+                        # Log con informazioni più rilevanti
+                        card_number = data.get('card_number', '')
+                        control = data.get('control', '')
+                        punch_time_val = data.get('punch_time', '')
+                        station_name = data.get('name', '')
+                        
+                        logging.info(f"[{src}] PUNCH: SiCard={card_number}, Control={control}, Time={punch_time_val}, Station={station_name}")
+                        
+                        # Log dettagliato per debug
+                        if logging.getLogger().level <= logging.DEBUG:
+                            for k, v in data.items():
+                                logging.debug(f"  {k}: {v}")
+                        
+                        # Estrai i campi dal JSON (compatibile con entrambi gli script)
+                        device_name = data.get('name', '')
+                        
+                        # Supporto per diversi nomi di campo per l'ID della carta
+                        # Priorità a card_number che contiene il numero effettivo della SiCard
+                        sicard_id = data.get('card_number',
+                                        data.get('sicard_id',
+                                        data.get('card_id',
+                                        data.get('chip_id', ''))))
+                        
+                        # Supporto per diversi nomi di campo per il codice stazione
+                        station_code = data.get('control',
+                                            data.get('station_code',
+                                            data.get('station_id',
+                                            data.get('control_code', ''))))
+                        
+                        # Supporto per diversi nomi di campo per l'orario di punzonatura
+                        punch_time = data.get('punch_time',
+                                         data.get('time', ''))
+                        
+                        if csv_enabled:
+                            # Conserva il JSON originale come extra data
+                            extra_json = raw
+                            
+                            # Scrivi su CSV
+                            writer.writerow([
+                                timestamp,
+                                src,
+                                topic,
+                                device_time,
+                                sicard_id,
+                                station_code,
+                                punch_time,
+                                device_name,
+                                extra_json
+                            ])
+                            
+                            logging.info(f"Salvata punzonatura nel CSV: SiCard {sicard_id}, Stazione {station_code}, Ora {punch_time}")
                     
-                    # Scrivi su CSV
-                    writer.writerow([
-                        timestamp,
-                        src,
-                        topic,
-                        device_time,
-                        sicard_id,
-                        station_code,
-                        punch_time,
-                        device_name,
-                        extra_json
-                    ])
-                    
-                    logging.info(f"Salvata punzonatura nel CSV: SiCard {sicard_id}, Stazione {station_code}")
-                
-            except json.JSONDecodeError:
-                # Non è JSON, salva come testo semplice
-                raw_text = payload.decode() if isinstance(payload, (bytes, bytearray)) else str(payload)
+                    except json.JSONDecodeError:
+                        # Fallback se non è JSON valido
+                        logging.warning("JSON non valido, scrittura fallback come testo")
+                        raw_text = raw
+                        if csv_enabled:
+                            writer.writerow([timestamp, src, topic, device_time, '', '', '', '', raw_text])
+                else:
+                    # Non è JSON, trattalo come testo semplice
+                    raw_text = payload.decode() if isinstance(payload, (bytes, bytearray)) else str(payload)
+                    if csv_enabled:
+                        writer.writerow([timestamp, src, topic, device_time, '', '', '', '', raw_text])
+                    logging.info(f"[{src}] PAYLOAD non JSON: {raw_text}")
+            
+            except Exception as e:
+                logging.error(f"Errore nel processare il payload: {e}")
                 if csv_enabled:
-                    writer.writerow([timestamp, src, topic, device_time, 'unknown', 'unknown', 'unknown', 'unknown', raw_text])
-                logging.info(f"[{src}] PAYLOAD non JSON: {raw_text}")
+                    writer.writerow([timestamp, src, topic, device_time, '', '', '', '', str(e)])
         
         # Fallback su testo plain
         elif packet.get('text'):
             text = packet.get('text')
             if csv_enabled:
-                writer.writerow([timestamp, src, topic, device_time, 'unknown', 'unknown', 'unknown', 'unknown', text])
+                writer.writerow([timestamp, src, topic, device_time, '', '', '', '', text])
             logging.info(f"[{src}] RAW: {text}")
         
         else:
             packet_str = str(packet)
             if csv_enabled:
-                writer.writerow([timestamp, src, topic, device_time, 'unknown', 'unknown', 'unknown', 'unknown', packet_str])
+                writer.writerow([timestamp, src, topic, device_time, '', '', '', '', packet_str])
             logging.info(f"[{src}] PACKET: {packet_str}")
     
     except Exception as e:

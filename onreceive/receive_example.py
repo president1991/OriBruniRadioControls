@@ -20,14 +20,20 @@ port = mesh_conf.get('PORT', '/dev/ttyUSB1')
 baud = mesh_conf.getint('BAUDRATE', 9600)
 
 # Sezione Logging
-log_conf = config.get('LOGGING', {})
+if config.has_section('LOGGING'):
+    log_conf = config['LOGGING']
+else:
+    log_conf = {}
 log_level_str = log_conf.get('LEVEL', 'INFO')
 numeric_level = getattr(logging, log_level_str.upper(), logging.INFO)
 logging.basicConfig(level=numeric_level,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Sezione Filter
-filter_conf = config.get('FILTER', {})
+if config.has_section('FILTER'):
+    filter_conf = config['FILTER']
+else:
+    filter_conf = {}
 topic_filter = filter_conf.get('TOPIC', '').strip() or None
 log_file = filter_conf.get('LOG_FILE', '').strip() or None
 

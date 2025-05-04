@@ -4,13 +4,13 @@ Script ottimizzato per lettura Sportident da seriale, invio punzonature via Inte
 Versione ottimizzata per Raspberry Pi con gestione efficiente delle risorse e del consumo energetico.
 """
 
+import glob
 import logging
 import time
 import json
 import signal
 import os
 import configparser
-import gzip
 import serial
 import threading
 import sys
@@ -23,8 +23,9 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from construct import *
-import meshtastic
 import meshtastic.serial_interface
+from threading import Timer
+import RPi.GPIO as GPIO
 
 # Variabili globali per gestione risorse
 executor = None
@@ -35,6 +36,89 @@ shutdown_event = threading.Event()
 config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
 log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
 
+# PIN PER LED E BUZZER
+# Definisci i pin (BCM numbering)
+LED_PIN = 11
+BUZZER_PIN = 18
+
+# --------------------------
+# FUNZIONI PER LED E BUZZER
+# --------------------------
+def setup_gpio():
+    """Set up GPIO pins with proper error handling for busy pins"""
+    # Try to clean up first
+    try:
+        GPIO.cleanup()
+    except Exception as e:
+        logging.warning(f"GPIO cleanup warning (non-critical): {e}")
+    
+    # Set mode with warnings disabled
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+    
+    # Try to set up each pin individually with error handling
+    try:
+        GPIO.setup(LED_PIN, GPIO.OUT, initial=GPIO.LOW)
+    except Exception as e:
+        logging.warning(f"Failed to setup LED_PIN (pin {LED_PIN}): {e}")
+        # Try to forcefully release this pin if possible
+        try:
+            os.system(f"gpio unexport {LED_PIN}")
+            time.sleep(0.5)
+            GPIO.setup(LED_PIN, GPIO.OUT, initial=GPIO.LOW)
+            logging.info(f"Successfully reclaimed LED_PIN after forced unexport")
+        except Exception as e2:
+            logging.error(f"Could not reclaim LED_PIN even after forced unexport: {e2}")
+    
+    try:
+        GPIO.setup(BUZZER_PIN, GPIO.OUT, initial=GPIO.LOW)
+    except Exception as e:
+        logging.warning(f"Failed to setup BUZZER_PIN (pin {BUZZER_PIN}): {e}")
+        # Try to forcefully release this pin if possible
+        try:
+            os.system(f"gpio unexport {BUZZER_PIN}")
+            time.sleep(0.5)
+            GPIO.setup(BUZZER_PIN, GPIO.OUT, initial=GPIO.LOW)
+            logging.info(f"Successfully reclaimed BUZZER_PIN after forced unexport")
+        except Exception as e2:
+            logging.error(f"Could not reclaim BUZZER_PIN even after forced unexport: {e2}")
+
+# Also modify activate_indicator to handle errors gracefully
+def activate_indicator():
+    """Accende LED e buzzer con gestione errori"""
+    try:
+        GPIO.output(LED_PIN, GPIO.HIGH)
+    except Exception as e:
+        logging.warning(f"Failed to activate LED: {e}")
+    
+def deactivate_indicator():
+    """Spegne LED e buzzer con gestione errori"""
+    try:
+        GPIO.output(LED_PIN, GPIO.LOW)
+        GPIO.output(BUZZER_PIN, GPIO.LOW)
+    except Exception as e:
+        logging.warning(f"Failed to deactivate indicators: {e}")
+        
+def beep_sequence():
+    """Fai 5 beep da 0.5s con 0.2s di pausa fra uno e l'altro."""
+    for _ in range(5):
+        try:
+            GPIO.output(BUZZER_PIN, GPIO.HIGH)
+            time.sleep(0.5)
+            GPIO.output(BUZZER_PIN, GPIO.LOW)
+            time.sleep(0.2)
+        except Exception as e:
+            logging.warning(f"Beep sequence error: {e}")
+            return
+        
+def cleanup_gpio():
+    """Clean up GPIO resources properly on exit"""
+    try:
+        deactivate_indicator()  # Make sure LEDs and buzzers are off
+        GPIO.cleanup()  # Release all GPIO resources
+        logging.info("GPIO resources released successfully")
+    except Exception as e:
+        logging.warning(f"Error during GPIO cleanup: {e}")
 # --------------------------
 # CARICAMENTO CONFIGURAZIONE
 # --------------------------
@@ -91,6 +175,7 @@ def load_config():
     config.read(config_path)
     return config
 
+
 # --------------------------
 # SETUP LOGGING
 # --------------------------
@@ -100,19 +185,23 @@ def setup_logging(config):
     max_size = int(config['LOGGING'].get('MAX_SIZE_MB', '5')) * 1024 * 1024
     backup_count = int(config['LOGGING'].get('BACKUP_COUNT', '3'))
     log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+
     log_file = os.path.join(log_path, 'sportident.log')
-    file_handler = RotatingFileHandler(
-        log_file, maxBytes=max_size, backupCount=backup_count)
+    file_handler = RotatingFileHandler(log_file, maxBytes=max_size, backupCount=backup_count)
     file_handler.setFormatter(log_formatter)
+
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(log_formatter)
+
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
+
     logging.info("Logging configurato con livello %s", config['LOGGING'].get('LEVEL'))
+
 
 # --------------------------
 # SESSIONE HTTP OTTIMIZZATA
@@ -121,47 +210,93 @@ def create_http_session(config):
     """Crea una sessione HTTP ottimizzata per connessioni instabili"""
     global session
     if session:
-        try: session.close()
-        except: pass
+        try:
+            session.close()
+        except:
+            pass
+
     session = requests.Session()
     retries = int(config['REMOTE'].get('MAX_RETRIES', '3'))
     backoff = float(config['REMOTE'].get('BACKOFF_FACTOR', '0.5'))
     timeout = int(config['REMOTE'].get('TIMEOUT', '5'))
+
     retry_strategy = Retry(
         total=retries,
         backoff_factor=backoff,
         status_forcelist=[429, 500, 502, 503, 504],
         allowed_methods=["POST", "GET"]
     )
-    adapter = HTTPAdapter(
-        pool_connections=1,
-        pool_maxsize=2,
-        max_retries=retry_strategy
-    )
+    adapter = HTTPAdapter(pool_connections=1, pool_maxsize=2, max_retries=retry_strategy)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
+
     session.headers.update({
-        "User-Agent":      "OriBruniClient/1.0",
-        "Accept":          "application/json",
+        "User-Agent": "OriBruniClient/1.0",
+        "Accept": "application/json",
         "Accept-Encoding": "gzip",
-        "Connection":      "keep-alive",
-        "Content-Type":    "application/json"
+        "Connection": "keep-alive",
+        "Content-Type": "application/json"
     })
     return session
+
 
 # --------------------------
 # SESSIONE MESHTASTIC
 # --------------------------
 def create_mesh_session(config):
-    """Crea e ritorna una connessione Meshtastic via seriale"""
+    """Crea e ritorna una connessione Meshtastic via seriale con gestione errori migliorata"""
     global mesh_iface
+    
+    # Try to close any existing connection
     if mesh_iface:
-        try: mesh_iface.close()
-        except: pass
-    # SerialInterface ora prende solo devPath; il baud viene gestito internamente (default 115200)
+        try:
+            mesh_iface.close()
+            mesh_iface = None
+            time.sleep(0.5)  # Give it time to properly close
+        except Exception as e:
+            logging.warning(f"Error closing existing Meshtastic connection: {e}")
+    
     port = config['MESHTASTIC']['PORT']
-    mesh_iface = meshtastic.serial_interface.SerialInterface(devPath=port)
-    return mesh_iface
+    
+    # Check if port exists
+    if not os.path.exists(port):
+        logging.error(f"Meshtastic port {port} does not exist")
+        return None
+        
+    # Try to release the port if it's in use
+    try:
+        import subprocess
+        # Try different methods to release the port
+        commands = [
+            ['fuser', '-k', port],
+            ['pkill', '-f', 'meshtastic'],
+            ['pkill', '-f', 'serial_interface']
+        ]
+        
+        for cmd in commands:
+            try:
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
+            except Exception:
+                pass
+                
+        # Wait a bit for the port to be released
+        time.sleep(1)
+    except Exception as e:
+        logging.warning(f"Failed to release port {port}: {e}")
+    
+    # Now try to connect
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            mesh_iface = meshtastic.serial_interface.SerialInterface(devPath=port)
+            logging.info(f"Mesh session aperta su {port} (tentativo {attempt+1})")
+            return mesh_iface
+        except Exception as e:
+            logging.warning(f"Tentativo {attempt+1}/{max_retries} di connessione a Meshtastic fallito: {e}")
+            time.sleep(2)  # Wait before retry
+    
+    logging.error(f"Impossibile aprire la connessione Meshtastic dopo {max_retries} tentativi")
+    return None
 
 # --------------------------
 # PARSING SPORTIDENT
@@ -178,21 +313,26 @@ def remove_dle(data: bytes) -> bytes:
     i = 0
     while i < len(data):
         b = data[i]
-        # se incontriamo DLE e il byte successivo è uno dei tre escapati
-        if b == 0x10 and i + 1 < len(data) and data[i+1] in (0x10, 0x02, 0x03):
-            result.append(data[i+1])
+        if b == 0x10 and i + 1 < len(data) and data[i + 1] in (0x10, 0x02, 0x03):
+            result.append(data[i + 1])
             i += 2
         else:
             result.append(b)
             i += 1
     return bytes(result)
 
+
 class SportidentTimeAdapter(Adapter):
     def _decode(self, obj, context, path):
         seconds = Int16ub.parse(obj)
         return timedelta(seconds=seconds)
-    def _encode(self, obj, context, path): raise NotImplementedError()
+
+    def _encode(self, obj, context, path):
+        raise NotImplementedError()
+
+
 SportidentTime = SportidentTimeAdapter(Bytes(2))
+
 
 class CorrectedSportidentCardAdapter(Adapter):
     def _decode(self, obj, context, path):
@@ -204,7 +344,11 @@ class CorrectedSportidentCardAdapter(Adapter):
             if 100000 < num5 < 500000 and 1 <= prefix <= 9:
                 return num5
         return int.from_bytes(buf[1:4], 'big')
-    def _encode(self, obj, context, path): raise NotImplementedError()
+
+    def _encode(self, obj, context, path):
+        raise NotImplementedError()
+
+
 CorrectedSportidentCard = CorrectedSportidentCardAdapter(Bytes(4))
 
 SiPacket = Struct(
@@ -224,10 +368,12 @@ SiPacket = Struct(
     "Etx"     / Const(b"\x03")
 )
 
-def convert_extended_time(td_byte: int, th_tl: timedelta, tss_byte: int):
+
+def convert_extended_time(td_byte: int, th_tl: timedelta, tss_byte: int) -> float:
     half_day = td_byte & 0x01
-    secs = th_tl.total_seconds() + (12*3600 if half_day else 0) + tss_byte/256.0
+    secs = th_tl.total_seconds() + (12 * 3600 if half_day else 0) + tss_byte / 256.0
     return secs
+
 
 def extract_frame(buffer: bytearray):
     while buffer and buffer[0] == 0xFF:
@@ -236,28 +382,26 @@ def extract_frame(buffer: bytearray):
         start = buffer.index(0x02)
     except ValueError:
         return None, buffer
-    if len(buffer)-start < 3:
+    if len(buffer) - start < 3:
         return None, buffer
-    length = buffer[start+2]
+    length = buffer[start + 2]
     total = length + 6
-    if len(buffer)-start < total:
+    if len(buffer) - start < total:
         return None, buffer
-    frame = bytes(buffer[start:start+total])
-    newbuf = buffer[start+total:]
+    frame = bytes(buffer[start:start + total])
+    newbuf = buffer[start + total:]
     if frame[-1] != 0x03:
         logging.error("Frame errato: %s", frame.hex())
         return None, newbuf
-    return frame, newbuf    
+    return frame, newbuf
+
 
 def decode_sportident(raw: bytes):
-    # Assicurati che il frame inizi con STX (0x02) e termini con ETX (0x03)
     if not (raw.startswith(b"\x02") and raw.endswith(b"\x03")):
         logging.error("Frame non completo (mancano STX/ETX): %s", raw.hex())
         return None
-    # Rimuovi i DLE (escaping) ma mantieni STX/ETX per il parser
     try:
         clean_frame = remove_dle(raw)
-        # parse sul frame completo
         p = SiPacket.parse(clean_frame)
         secs = convert_extended_time(p.Td, p.ThTl, p.Tsubsec)
         base = datetime.today().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -269,9 +413,9 @@ def decode_sportident(raw: bytes):
             'raw_punch_data': raw.hex()
         }
     except Exception as e:
-        # Mostra l'errore di parsing e il frame grezzo in esadecimale
         logging.error("Parse error: %s — raw frame: %s", e, raw.hex())
         return None
+
 
 # --------------------------
 # FUNZIONI DATABASE
@@ -283,21 +427,24 @@ def get_db_connection(db_config):
         logging.error("DB conn error: %s", e)
         return None
 
+
 def insert_into_db(parsed, db_config):
     conn = get_db_connection(db_config)
     if not conn:
         return None
     cur = conn.cursor()
-    q = ("""
+    q = """
     INSERT INTO radiocontrol (
       control, card_number, punch_time,
       raw_punch_data, timestamp, sent_internet
     ) VALUES (%s,%s,%s,%s,%s,0)
-    """)
+    """
     vals = (
-        parsed['control'], parsed['card_number'],
+        parsed['control'],
+        parsed['card_number'],
         parsed['punch_time'].strftime('%Y-%m-%d %H:%M:%S.%f'),
-        parsed['raw_punch_data'], datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        parsed['raw_punch_data'],
+        datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     )
     try:
         with threading.Lock():
@@ -307,8 +454,10 @@ def insert_into_db(parsed, db_config):
     except Exception as e:
         logging.error("DB insert error: %s", e)
     finally:
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
     return None
+
 
 def fetch_record_by_id(record_id, db_config):
     conn = get_db_connection(db_config)
@@ -324,19 +473,24 @@ def fetch_record_by_id(record_id, db_config):
         conn.close()
     return None
 
+
 def get_unsent_records(db_config, limit=10):
     conn = get_db_connection(db_config)
     if not conn:
         return []
     try:
         with conn.cursor(dictionary=True) as cur:
-            cur.execute("SELECT * FROM radiocontrol WHERE sent_internet=0 ORDER BY id ASC LIMIT %s", (limit,))
+            cur.execute(
+                "SELECT * FROM radiocontrol WHERE sent_internet=0 ORDER BY id ASC LIMIT %s",
+                (limit,)
+            )
             return cur.fetchall()
     except mysql.connector.Error as e:
         logging.error("Fetch unsent error: %s", e)
     finally:
         conn.close()
     return []
+
 
 def mark_record_as_sent(record_id, db_config):
     conn = get_db_connection(db_config)
@@ -353,19 +507,24 @@ def mark_record_as_sent(record_id, db_config):
         conn.close()
     return False
 
+
 def get_device_identifiers(db_config):
     conn = get_db_connection(db_config)
     if not conn:
         return None, None
     cur = conn.cursor()
-    cur.execute("SELECT nome, valore FROM costanti WHERE nome IN ('nome','pkey') ORDER BY nome")
+    cur.execute(
+        "SELECT nome, valore FROM costanti WHERE nome IN ('nome','pkey') ORDER BY nome"
+    )
     rows = cur.fetchall()
-    cur.close(); conn.close()
+    cur.close()
+    conn.close()
     if len(rows) == 2:
         d = {r[0]: r[1] for r in rows}
         return d.get('nome'), d.get('pkey')
     logging.error("Device IDs mancanti")
     return None, None
+
 
 def log_event(nome, errore, descr, db_config):
     conn = get_db_connection(db_config)
@@ -373,59 +532,59 @@ def log_event(nome, errore, descr, db_config):
         return
     cur = conn.cursor()
     try:
-        cur.execute("INSERT INTO log(nome, errore, descrizione) VALUES(%s,%s,%s)",
-                    (nome, errore, descr))
+        cur.execute(
+            "INSERT INTO log(nome, errore, descrizione) VALUES(%s,%s,%s)",
+            (nome, errore, descr)
+        )
         conn.commit()
     except mysql.connector.Error as e:
         logging.error("Log error: %s", e)
     finally:
-        cur.close(); conn.close()
+        cur.close()
+        conn.close()
+
 
 # --------------------------
 # INVIO VIA MESHTASTIC
 # --------------------------
 def send_record_on_mesh(record, name, pkey, config, mesh_iface):
-    """Invia il record sulla mesh Meshtastic"""
+    """Invia il record sulla mesh Meshtastic con log su console."""
     if not mesh_iface or not record:
         return False
+
+    record_id = record['id']
+    logging.info("📶 [MESH] Inizio invio record %s su Meshtastic", record_id)
+
     payload = {
         'name': name,
         'pkey': pkey,
-        'id': record['id'],
+        'id': record_id,
         'control': record['control'],
         'card_number': record['card_number'],
         'punch_time': record['punch_time'].isoformat()
     }
-    topic = config['MESHTASTIC'].get('TOPIC', '') or None
     want_ack = config['MESHTASTIC'].getboolean('ACK', True)
     try:
-        # non passiamo più "topic" come destinazione, così non viene
-        # interpretato come un intero e non genera errori di parsing
-        mesh_iface.sendText(
-            json.dumps(payload),
-            wantAck=want_ack
-        )
-        logging.info("Inviato su Meshtastic id=%s", record['id'])
+        mesh_iface.sendText(json.dumps(payload), wantAck=want_ack)
+        logging.info("✅ [MESH] Record %s inviato con successo su Meshtastic", record_id)
         return True
     except Exception as e:
-        logging.error("Errore invio Mesh %s: %s", record['id'], e)
+        logging.error("❌ [MESH] Errore invio record %s: %s", record_id, e)
         return False
 
-# --------------------------
-# INVIO RECORD ONLINE + MESH
-# --------------------------
+
 def send_record_online(record, config, session, db_config):
-    """Invia un record al servizio online e su Meshtastic"""
+    """Invia un record al servizio online con log su console."""
     if not record:
         return False
 
     record_id = record.get('id')
     name, pkey = get_device_identifiers(db_config)
     if not name or not pkey:
-        logging.error("Device IDs mancanti per %s", record_id)
+        logging.error("❌ [ONLINE] Device IDs mancanti per record %s", record_id)
         return False
 
-    # Prepara payload HTTP con datetime compatibili MySQL (no T, no frazioni)
+    # Prepara payload
     punch_time = record['punch_time']
     timestamp = record['timestamp']
     if isinstance(punch_time, datetime):
@@ -444,37 +603,36 @@ def send_record_online(record, config, session, db_config):
         'raw_punch_data': record.get('raw_punch_data')
     }
 
-    # 1) Invio HTTP e gestione errori di connessione/status
+    logging.info("🌐 [ONLINE] Inizio invio record %s al server", record_id)
     try:
         resp = session.post(
             config['REMOTE']['URL'],
             json=payload,
             timeout=int(config['REMOTE'].get('TIMEOUT', '5'))
         )
+        logging.info("🌐 [ONLINE] HTTP %s → %d", config['REMOTE']['URL'], resp.status_code)
         resp.raise_for_status()
     except requests.RequestException as e:
-        msg = str(e)
-        logging.error("HTTP error %s: %s", record_id, msg)
-        log_event(name, 'Errore Connessione', msg[:200], db_config)
+        logging.error("❌ [ONLINE] HTTP error record %s: %s", record_id, e)
+        log_event(name, 'Errore Connessione', str(e)[:200], db_config)
         return False
 
-    # 2) Parsing JSON con fallback
     try:
         data = resp.json()
-    except ValueError:
+    except ValueError as e:
         text = resp.text.strip().replace('\n', ' ')
-        logging.error("Invalid JSON for id %s: %r", record_id, text)
+        logging.error("❌ [ONLINE] JSON invalido record %s: %r", record_id, text)
         log_event(name, 'Errore JSON', text[:200], db_config)
         return False
 
-    # 3) Verifica status nel JSON
     if data.get('status') == 'success':
-        logging.info("Inviato online id=%s", record_id)
-        mark_record_as_sent(record_id, db_config)
+        logging.info("✅ [ONLINE] Record %s inviato con successo", record_id)
+        if mark_record_as_sent(record_id, db_config):
+            logging.info("✅ [ONLINE] Record %s marcato come inviato in DB", record_id)
         log_event(name, 'Successo', f'id={record_id}', db_config)
     else:
         errtxt = str(data)[:200]
-        logging.error("Errore invio %s: %s", record_id, data)
+        logging.error("❌ [ONLINE] Errore invio record %s: %s", record_id, errtxt)
         log_event(name, 'Errore Invio', errtxt, db_config)
 
     return True
@@ -490,6 +648,7 @@ def send_record_mesh(record, config, mesh_iface, db_config):
         logging.error("Errore invio Mesh (task dedicato) %s: %s", record['id'], e)
     return True
 
+
 # --------------------------
 # PROCESS RECORD
 # --------------------------
@@ -497,12 +656,9 @@ def process_record(record_id, config, session, db_config):
     record = fetch_record_by_id(record_id, db_config)
     if not record:
         return
-
-    # Task 1: invio HTTP
     executor.submit(send_record_online, record, config, session, db_config)
-
-    # Task 2: invio su Meshtastic (indipendente)
     executor.submit(send_record_mesh, record, config, mesh_iface, db_config)
+
 
 # --------------------------
 # MONITORAGGIO SISTEMA
@@ -511,17 +667,16 @@ def check_system_health():
     try:
         cpu_percent = psutil.cpu_percent(interval=1)
         memory = psutil.virtual_memory()
-        memory_percent = memory.percent
         disk = psutil.disk_usage('/')
-        disk_percent = disk.percent
         temp = None
         if os.path.exists('/sys/class/thermal/thermal_zone0/temp'):
             with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
                 temp = float(f.read()) / 1000.0
+
         health_data = {
             'cpu_percent': cpu_percent,
-            'memory_percent': memory_percent,
-            'disk_percent': disk_percent,
+            'memory_percent': memory.percent,
+            'disk_percent': disk.percent,
             'temperature': temp
         }
         if temp and temp > 80:
@@ -533,10 +688,10 @@ def check_system_health():
         logging.error("Errore monitoraggio sistema: %s", e)
         return None
 
-# --------------------------
-# KEEP ALIVE E WATCHDOG
-# --------------------------
 
+# --------------------------
+# RETRY UNSENT RECORDS
+# --------------------------
 def retry_unsent_records(config, db_config):
     if shutdown_event.is_set():
         return
@@ -545,12 +700,16 @@ def retry_unsent_records(config, db_config):
         if unsent:
             logging.info("Trovati %d record non inviati", len(unsent))
             for record in unsent:
-                if shutdown_event.is_set(): break
+                if shutdown_event.is_set():
+                    break
                 send_record_online(record, config, session, db_config)
+                send_record_mesh(record, config, mesh_iface, db_config)
     except Exception as e:
         logging.error("Errore retry unsent: %s", e)
-    if not shutdown_event.is_set():
-        threading.Timer(300, retry_unsent_records, args=[config, db_config]).start()
+    finally:
+        if not shutdown_event.is_set():
+            Timer(300, retry_unsent_records, args=[config, db_config]).start()
+
 
 # --------------------------
 # SEGNALI
@@ -559,8 +718,10 @@ def setup_signal_handlers():
     def signal_handler(sig, frame):
         logging.info("Segnale %s ricevuto, chiusura in corso...", sig)
         shutdown_event.set()
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
+
 
 # --------------------------
 # OTTIMIZZAZIONE RASPBERRY PI
@@ -568,46 +729,156 @@ def setup_signal_handlers():
 def optimize_raspberry_pi(config):
     if config['RASPBERRY'].getboolean('OPTIMIZE_POWER', True):
         try:
-            for led_path in ['/sys/class/leds/led0/brightness', '/sys/class/leds/led1/brightness']:
-                if os.path.exists(led_path) and os.access(led_path, os.W_OK):
-                    with open(led_path, 'w') as f: f.write('0')
+            # Spegni LED
+            for led in ['/sys/class/leds/led0/brightness', '/sys/class/leds/led1/brightness']:
+                if os.path.exists(led) and os.access(led, os.W_OK):
+                    with open(led, 'w') as f:
+                        f.write('0')
             gov = '/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor'
             if os.path.exists(gov):
-                with open(gov, 'w') as f: f.write('powersave')
+                with open(gov, 'w') as f:
+                    f.write('powersave')
             logging.info("Ottimizzazione energia Raspberry Pi completata")
         except Exception as e:
             logging.warning("Impossibile ottimizzare energia Raspberry Pi: %s", e)
 
+
 # --------------------------
 # MAIN LOOP
 # --------------------------
-def main_loop(config):
-    global executor, serial_port, session, mesh_iface
+def main_loop(config, config_file_path=config_path):
+    # rendiamo esecutore e mesh_iface accessibili globalmente
+    global executor, mesh_iface
+
+    # Carica e aggiorna dinamicamente il config.ini
+    parser = configparser.ConfigParser()
+    parser.read(config_file_path)
+
+    # Ricerca delle porte seriali via symlink by-id
+    meshtastic_port = None
+    sportident_port = None
+    for path in glob.glob('/dev/serial/by-id/*'):
+        if 'SPORTident' in path:
+            sportident_port = path
+        elif 'CP2102' in path or 'Meshtastic' in path:
+            meshtastic_port = path
+
+    # Validazione e aggiornamento del config.ini
+    updated = False
+    if meshtastic_port:
+        parser.set('MESHTASTIC', 'PORT', meshtastic_port)
+        updated = True
+    else:
+        logging.critical("Nessuna porta Meshtastic trovata.")
+        _log_db_error('Errore Porta Meshtastic Non Trovata',
+                      'Nessun dispositivo CP2102 rilevato', config)
+        return
+
+    if sportident_port:
+        parser.set('SERIAL', 'PORT', sportident_port)  # Changed from SPORTIDENT_PORT to PORT
+        updated = True
+    else:
+        logging.critical("Nessuna porta SportIdent trovata.")
+        _log_db_error('Errore Porta Sportident Non Trovata',
+                      'Nessun dispositivo SPORTident rilevato', config)
+        return
+
+    if updated:
+        with open(config_file_path, 'w') as cfgfile:
+            parser.write(cfgfile)
+        logging.info(
+            "File config.ini aggiornato: MESHTASTIC_PORT=%s, SPORTIDENT_PORT=%s",
+            meshtastic_port, sportident_port
+        )
+
+    # Configurazione connessione al DB
     db_config = {
         'user': config['DATABASE']['USER'],
         'password': config['DATABASE']['PASSWORD'],
         'host': config['DATABASE']['HOST'],
         'database': config['DATABASE']['DATABASE']
     }
+
+    # Sessione HTTP per invii REST
     session = create_http_session(config)
-    mesh_iface = create_mesh_session(config)
-    logging.info("Mesh session aperta su %s", config['MESHTASTIC']['PORT'])
-    optimize_raspberry_pi(config)
+
+    # Avvia sessione Meshtastic
+    mesh_iface = None
+    try:
+        # Check if port is in use and release it if necessary
+        try:
+            import subprocess
+            # Try to kill any process using the port
+            result = subprocess.run(['fuser', '-k', meshtastic_port], 
+                                    stdout=subprocess.DEVNULL, 
+                                    stderr=subprocess.DEVNULL,
+                                    check=False)
+            # Wait a bit for the port to be released
+            time.sleep(1)
+        except Exception as e:
+            logging.warning(f"Failed to check/release port {meshtastic_port}: {e}")
+            
+        # Now try to open the Meshtastic port
+        mesh_iface = meshtastic.serial_interface.SerialInterface(devPath=meshtastic_port)
+        logging.info("Mesh session aperta su %s", meshtastic_port)
+    except Exception as e:
+        logging.critical("Errore apertura Meshtastic: %s", str(e))
+        _log_db_error('Errore Apertura Meshtastic', str(e), config)
+        logging.warning("Continuando senza supporto Meshtastic...")
+        # continue without Meshtastic
+
+    # Ottimizzazioni Raspberry
+    try:
+        optimize_raspberry_pi(config)
+    except Exception as e:
+        logging.warning(f"Errore ottimizzazione Raspberry Pi: {e}")
+
+    # ThreadPool per elaborazioni asincrone
     max_workers = int(config['EXECUTION'].get('MAX_WORKERS', '3'))
     executor = ThreadPoolExecutor(max_workers=max_workers)
-    threading.Timer(30, retry_unsent_records, args=[config, db_config]).start()
+
+    # Retry per record non inviati
+    Timer(30, retry_unsent_records, args=[config, db_config]).start()
+
+    # Apertura porta SportIdent
+    serial_port = None
     try:
-        port = config['SERIAL']['PORT']
         baudrate = int(config['SERIAL']['BAUDRATE'])
-        serial_port = serial.Serial(port, baudrate, timeout=0.1)
-        logging.info("Porta seriale %s aperta a %d baud", port, baudrate)
+        # Check if port is in use and release it if necessary
+        try:
+            import subprocess
+            # Try to kill any process using the port
+            result = subprocess.run(['fuser', '-k', sportident_port], 
+                                    stdout=subprocess.DEVNULL, 
+                                    stderr=subprocess.DEVNULL,
+                                    check=False)
+            # Wait a bit for the port to be released
+            time.sleep(1)
+        except Exception as e:
+            logging.warning(f"Failed to check/release port {sportident_port}: {e}")
+            
+        serial_port = serial.Serial(sportident_port, baudrate, timeout=0.1)
+        logging.info("Porta SportIdent %s aperta a %d baud", sportident_port, baudrate)
     except Exception as e:
-        logging.critical("Errore apertura seriale: %s", e)
+        logging.critical("Errore apertura porta SportIdent: %s", str(e))
+        _log_db_error('Errore Apertura Sportident', str(e), config)
         shutdown_event.set()
         return
+
+    # Parametri loop
     poll_interval = float(config['SERIAL'].get('POLL_SERIAL_MS', '10')) / 1000.0
     recv_buffer = bytearray()
     logging.info("Loop principale avviato")
+    
+    # Attempt to activate indicators (LED/buzzer)
+    try:
+        activate_indicator()
+        # LED già acceso da activate_indicator(); ora lancio il beep in parallelo
+        threading.Thread(target=beep_sequence, daemon=True).start()
+    except Exception as e:
+        logging.warning(f"Failed to activate indicators: {e}")
+
+    # Ciclo principale di lettura
     while not shutdown_event.is_set():
         try:
             data = serial_port.read(200)
@@ -615,39 +886,63 @@ def main_loop(config):
                 recv_buffer.extend(data)
                 while True:
                     frame, recv_buffer = extract_frame(recv_buffer)
-                    if not frame: break
+                    if not frame:
+                        break
                     pkt = decode_sportident(frame)
-                    if not pkt: continue
+                    if not pkt:
+                        continue
                     last_id = insert_into_db(pkt, db_config)
                     if last_id:
-                        print(f"Station (Control): {pkt['control']}")
-                        print(f"Chip number: {pkt['card_number']}")
-                        print(f"Punch time: {pkt['punch_time']}")
-                        print("-" * 20)
                         executor.submit(process_record, last_id, config, session, db_config)
                     else:
-                        logging.error("Inserimento DB fallito per %s", pkt)
+                        logging.error("Inserimento DB fallito per pkt=%s", pkt)
             else:
                 time.sleep(poll_interval)
         except Exception as e:
-            logging.error("Errore loop principale: %s", e)
+            logging.error("Errore loop principale: %s", str(e))
             time.sleep(1)
-    logging.info("Chiusura risorse in corso...")
+
+    # Cleanup
+    logging.info("Pulizia risorse...")
     if serial_port and serial_port.is_open:
-        serial_port.close()
-        logging.info("Porta seriale chiusa")
+        try:
+            serial_port.close()
+        except Exception as e:
+            logging.error(f"Error closing serial port: {e}")
+            
     if executor:
-        logging.info("Attesa completamento tasks...")
-        executor.shutdown(wait=True)
-        logging.info("Thread pool chiuso")
+        try:
+            executor.shutdown(wait=True)
+        except Exception as e:
+            logging.error(f"Error shutting down executor: {e}")
+            
     if session:
-        session.close()
-        logging.info("Sessione HTTP chiusa")
+        try:
+            session.close()
+        except Exception as e:
+            logging.error(f"Error closing HTTP session: {e}")
+            
     if mesh_iface:
-        try: mesh_iface.close()
-        except: pass
-        logging.info("Sessione Meshtastic chiusa")
-    logging.info("Programma terminato correttamente")
+        try:
+            mesh_iface.close()
+        except Exception as e:
+            logging.error(f"Error closing Meshtastic interface: {e}")
+            
+    logging.info("Programma terminato")
+
+def _log_db_error(error_type, description, config):
+    db_config = {
+        'user': config['DATABASE']['USER'],
+        'password': config['DATABASE']['PASSWORD'],
+        'host': config['DATABASE']['HOST'],
+        'database': config['DATABASE']['DATABASE']
+    }
+    try:
+        name, _ = get_device_identifiers(db_config)
+        log_event(name, error_type, description, db_config)
+    except Exception as db_e:
+        logging.error("Errore log DB interno: %s", str(db_e))
+
 
 # --------------------------
 # SERVICE FILE
@@ -677,23 +972,31 @@ WantedBy=multi-user.target
         f.write(service_content)
     print(f"File di servizio creato in {service_path}")
     print("Per installare il servizio:")
-    print(f"sudo cp {service_path} /etc/systemd/system/")
-    print("sudo systemctl daemon-reload")
-    print("sudo systemctl enable sportident.service")
-    print("sudo systemctl.start sportident.service")
+    print(f"  sudo cp {service_path} /etc/systemd/system/")
+    print("  sudo systemctl daemon-reload")
+    print("  sudo systemctl enable sportident.service")
+    print("  sudo systemctl start sportident.service")
+
 
 # --------------------------
 # ENTRY POINT
 # --------------------------
 if __name__ == '__main__':
+    setup_gpio()
     if len(sys.argv) > 1 and sys.argv[1] == "--create-service":
         create_service_file()
         sys.exit(0)
+
     config = load_config()
     setup_logging(config)
+    logging.getLogger("meshtastic.serial_interface").setLevel(logging.DEBUG)
     setup_signal_handlers()
     try:
+        activate_indicator()
         main_loop(config)
     except Exception as e:
         logging.critical("Errore fatale: %s", e, exc_info=True)
         sys.exit(1)
+        raise
+    finally:
+        cleanup_gpio()

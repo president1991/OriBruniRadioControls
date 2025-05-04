@@ -1,0 +1,22 @@
+[2025-04-30 15:29:16,473] INFO: Avvio MeshDash con porta='COM3', refresh=10000ms, log=INFO
+[2025-04-30 15:29:17,892] INFO: Timer auto-refresh impostato a 10000 ms
+[2025-04-30 15:30:37,138] INFO: Avvio MeshDash con porta='COM3', refresh=10000ms, log=INFO
+[2025-04-30 15:30:37,171] INFO: Timer auto-refresh impostato a 10000 ms
+[2025-05-01 10:46:59,529] INFO: Avvio MeshDash con porta='COM3', refresh=10000ms, log=INFO
+[2025-05-01 10:46:59,547] INFO: Timer auto-refresh impostato a 10000 ms
+[2025-05-01 10:47:04,987] INFO: Connesso a porta seriale: COM5
+[2025-05-01 17:53:19,774] INFO: Avvio MeshDash con porta='COM3', refresh=10000ms, log=INFO
+[2025-05-01 17:53:20,475] INFO: Timer auto-refresh impostato a 10000 ms
+[2025-05-01 17:53:31,962] INFO: Connesso a porta seriale: /dev/cu.usbserial-0001
+[2025-05-01 18:24:20,063] INFO: Avvio MeshDash con porta='COM3', refresh=10000ms, log=INFO
+[2025-05-01 18:24:20,171] INFO: Timer auto-refresh impostato a 10000 ms
+[2025-05-01 18:24:26,285] INFO: Connesso a porta seriale: COM3
+[2025-05-03 22:02:28,669] INFO: Avvio MeshDash con porta='COM3', refresh=10000ms, log=INFO
+[2025-05-03 22:02:28,700] INFO: Timer auto-refresh impostato a 10000 ms
+[2025-05-03 22:02:34,119] INFO: Connesso a porta seriale: COM5
+[2025-05-03 22:05:19,304] INFO: Avvio MeshDash con porta='COM3', refresh=10000ms, log=INFO
+[2025-05-03 22:05:19,323] INFO: Timer auto-refresh impostato a 10000 ms
+[2025-05-03 22:05:23,955] INFO: Connesso a porta seriale: COM5
+[2025-05-04 16:27:23,038] INFO: Avvio MeshDash con porta='COM3', refresh=10000ms, log=INFO
+[2025-05-04 16:27:23,059] INFO: Timer auto-refresh impostato a 10000 ms
+[2025-05-04 16:27:27,941] INFO: Connesso a porta seriale: COM5
