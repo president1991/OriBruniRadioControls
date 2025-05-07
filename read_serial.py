@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Script ottimizzato per lettura Sportident da seriale, invio punzonature via Internet e via Meshtastic.
+Script ottimizzato per lettura Sportident da seriale, invio punzonature via Internet.
 Versione ottimizzata per Raspberry Pi con gestione efficiente delle risorse e del consumo energetico.
 """
 
@@ -23,15 +23,12 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from construct import *
-import meshtastic.serial_interface
-from threading import Timer
 import RPi.GPIO as GPIO
 
 # Variabili globali per gestione risorse
 executor = None
 serial_port = None
 session = None
-mesh_iface = None
 shutdown_event = threading.Event()
 config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.ini')
 log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
@@ -162,12 +159,6 @@ def load_config():
             'NETWORK_TIMEOUT': '30',
             'KEEP_ALIVE_INTERVAL': '300'
         }
-        config['MESHTASTIC'] = {
-            'PORT': '/dev/ttyUSB1',
-            'BAUDRATE': '9600',
-            'TOPIC': 'punch_data',
-            'ACK': 'true'
-        }
         # Scrivi il file di configurazione
         with open(config_path, 'w') as f:
             config.write(f)
@@ -238,65 +229,6 @@ def create_http_session(config):
         "Content-Type": "application/json"
     })
     return session
-
-
-# --------------------------
-# SESSIONE MESHTASTIC
-# --------------------------
-def create_mesh_session(config):
-    """Crea e ritorna una connessione Meshtastic via seriale con gestione errori migliorata"""
-    global mesh_iface
-    
-    # Try to close any existing connection
-    if mesh_iface:
-        try:
-            mesh_iface.close()
-            mesh_iface = None
-            time.sleep(0.5)  # Give it time to properly close
-        except Exception as e:
-            logging.warning(f"Error closing existing Meshtastic connection: {e}")
-    
-    port = config['MESHTASTIC']['PORT']
-    
-    # Check if port exists
-    if not os.path.exists(port):
-        logging.error(f"Meshtastic port {port} does not exist")
-        return None
-        
-    # Try to release the port if it's in use
-    try:
-        import subprocess
-        # Try different methods to release the port
-        commands = [
-            ['fuser', '-k', port],
-            ['pkill', '-f', 'meshtastic'],
-            ['pkill', '-f', 'serial_interface']
-        ]
-        
-        for cmd in commands:
-            try:
-                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2)
-            except Exception:
-                pass
-                
-        # Wait a bit for the port to be released
-        time.sleep(1)
-    except Exception as e:
-        logging.warning(f"Failed to release port {port}: {e}")
-    
-    # Now try to connect
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            mesh_iface = meshtastic.serial_interface.SerialInterface(devPath=port)
-            logging.info(f"Mesh session aperta su {port} (tentativo {attempt+1})")
-            return mesh_iface
-        except Exception as e:
-            logging.warning(f"Tentativo {attempt+1}/{max_retries} di connessione a Meshtastic fallito: {e}")
-            time.sleep(2)  # Wait before retry
-    
-    logging.error(f"Impossibile aprire la connessione Meshtastic dopo {max_retries} tentativi")
-    return None
 
 # --------------------------
 # PARSING SPORTIDENT
@@ -543,36 +475,6 @@ def log_event(nome, errore, descr, db_config):
         cur.close()
         conn.close()
 
-
-# --------------------------
-# INVIO VIA MESHTASTIC
-# --------------------------
-def send_record_on_mesh(record, name, pkey, config, mesh_iface):
-    """Invia il record sulla mesh Meshtastic con log su console."""
-    if not mesh_iface or not record:
-        return False
-
-    record_id = record['id']
-    logging.info("📶 [MESH] Inizio invio record %s su Meshtastic", record_id)
-
-    payload = {
-        'name': name,
-        'pkey': pkey,
-        'id': record_id,
-        'control': record['control'],
-        'card_number': record['card_number'],
-        'punch_time': record['punch_time'].isoformat()
-    }
-    want_ack = config['MESHTASTIC'].getboolean('ACK', True)
-    try:
-        mesh_iface.sendText(json.dumps(payload), wantAck=want_ack)
-        logging.info("✅ [MESH] Record %s inviato con successo su Meshtastic", record_id)
-        return True
-    except Exception as e:
-        logging.error("❌ [MESH] Errore invio record %s: %s", record_id, e)
-        return False
-
-
 def send_record_online(record, config, session, db_config):
     """Invia un record al servizio online con log su console."""
     if not record:
@@ -637,16 +539,34 @@ def send_record_online(record, config, session, db_config):
 
     return True
 
-def send_record_mesh(record, config, mesh_iface, db_config):
-    """Invia un record solo su Meshtastic, indipendentemente dall'online."""
+def send_record_mesh(record, config, _unused, db_config):
+    """Invia un record alla mesh tramite il servizio HTTP Meshtastic."""
     name, pkey = get_device_identifiers(db_config)
-    if not mesh_iface or not record or not name or not pkey:
+    if not record or not name or not pkey:
         return False
+    host = config['MESHTASTIC'].get('HTTP_HOST', 'localhost')
+    port = config['MESHTASTIC'].get('HTTP_PORT', '8000')
+    url = f"http://{host}:{port}/send_payload"
+    payload = {
+        'type': 'punch',
+        'timestamp': time.time(),
+        'data': {
+            'name': name,
+            'pkey': pkey,
+            'id': record['id'],
+            'control': record['control'],
+            'card_number': record['card_number'],
+            'punch_time': record['punch_time'].isoformat()
+        }
+    }
     try:
-        send_record_on_mesh(record, name, pkey, config, mesh_iface)
+        resp = requests.post(url, json=payload, timeout=5)
+        resp.raise_for_status()
+        logging.info(f"✅ [MESH HTTP] Record {record['id']} inviato a {url}")
+        return True
     except Exception as e:
-        logging.error("Errore invio Mesh (task dedicato) %s: %s", record['id'], e)
-    return True
+        logging.error(f"❌ [MESH HTTP] Errore invio record {record['id']} a {url}: {e}")
+        return False
 
 
 # --------------------------
@@ -657,9 +577,8 @@ def process_record(record_id, config, session, db_config):
     if not record:
         return
     executor.submit(send_record_online, record, config, session, db_config)
-    executor.submit(send_record_mesh, record, config, mesh_iface, db_config)
-
-
+    executor.submit(send_record_mesh, record, config, None, db_config)
+read
 # --------------------------
 # MONITORAGGIO SISTEMA
 # --------------------------
@@ -703,12 +622,12 @@ def retry_unsent_records(config, db_config):
                 if shutdown_event.is_set():
                     break
                 send_record_online(record, config, session, db_config)
-                send_record_mesh(record, config, mesh_iface, db_config)
+                send_record_mesh(record, config, None, db_config)
     except Exception as e:
         logging.error("Errore retry unsent: %s", e)
     finally:
         if not shutdown_event.is_set():
-            Timer(300, retry_unsent_records, args=[config, db_config]).start()
+            threading.Timer(300, retry_unsent_records, args=[config, db_config]).start()
 
 
 # --------------------------
@@ -747,32 +666,21 @@ def optimize_raspberry_pi(config):
 # MAIN LOOP
 # --------------------------
 def main_loop(config, config_file_path=config_path):
-    # rendiamo esecutore e mesh_iface accessibili globalmente
-    global executor, mesh_iface
+    # rendiamo esecutore accessibili globalmente
+    global executor
 
     # Carica e aggiorna dinamicamente il config.ini
     parser = configparser.ConfigParser()
     parser.read(config_file_path)
 
     # Ricerca delle porte seriali via symlink by-id
-    meshtastic_port = None
     sportident_port = None
     for path in glob.glob('/dev/serial/by-id/*'):
         if 'SPORTident' in path:
             sportident_port = path
-        elif 'CP2102' in path or 'Meshtastic' in path:
-            meshtastic_port = path
 
     # Validazione e aggiornamento del config.ini
     updated = False
-    if meshtastic_port:
-        parser.set('MESHTASTIC', 'PORT', meshtastic_port)
-        updated = True
-    else:
-        logging.critical("Nessuna porta Meshtastic trovata.")
-        _log_db_error('Errore Porta Meshtastic Non Trovata',
-                      'Nessun dispositivo CP2102 rilevato', config)
-        return
 
     if sportident_port:
         parser.set('SERIAL', 'PORT', sportident_port)  # Changed from SPORTIDENT_PORT to PORT
@@ -787,8 +695,8 @@ def main_loop(config, config_file_path=config_path):
         with open(config_file_path, 'w') as cfgfile:
             parser.write(cfgfile)
         logging.info(
-            "File config.ini aggiornato: MESHTASTIC_PORT=%s, SPORTIDENT_PORT=%s",
-            meshtastic_port, sportident_port
+            "File config.ini aggiornato: SPORTIDENT_PORT=%s",
+            sportident_port
         )
 
     # Configurazione connessione al DB
@@ -802,31 +710,6 @@ def main_loop(config, config_file_path=config_path):
     # Sessione HTTP per invii REST
     session = create_http_session(config)
 
-    # Avvia sessione Meshtastic
-    mesh_iface = None
-    try:
-        # Check if port is in use and release it if necessary
-        try:
-            import subprocess
-            # Try to kill any process using the port
-            result = subprocess.run(['fuser', '-k', meshtastic_port], 
-                                    stdout=subprocess.DEVNULL, 
-                                    stderr=subprocess.DEVNULL,
-                                    check=False)
-            # Wait a bit for the port to be released
-            time.sleep(1)
-        except Exception as e:
-            logging.warning(f"Failed to check/release port {meshtastic_port}: {e}")
-            
-        # Now try to open the Meshtastic port
-        mesh_iface = meshtastic.serial_interface.SerialInterface(devPath=meshtastic_port)
-        logging.info("Mesh session aperta su %s", meshtastic_port)
-    except Exception as e:
-        logging.critical("Errore apertura Meshtastic: %s", str(e))
-        _log_db_error('Errore Apertura Meshtastic', str(e), config)
-        logging.warning("Continuando senza supporto Meshtastic...")
-        # continue without Meshtastic
-
     # Ottimizzazioni Raspberry
     try:
         optimize_raspberry_pi(config)
@@ -838,7 +721,7 @@ def main_loop(config, config_file_path=config_path):
     executor = ThreadPoolExecutor(max_workers=max_workers)
 
     # Retry per record non inviati
-    Timer(30, retry_unsent_records, args=[config, db_config]).start()
+    threading.Timer(30, retry_unsent_records, args=[config, db_config]).start()
 
     # Apertura porta SportIdent
     serial_port = None
@@ -921,13 +804,7 @@ def main_loop(config, config_file_path=config_path):
             session.close()
         except Exception as e:
             logging.error(f"Error closing HTTP session: {e}")
-            
-    if mesh_iface:
-        try:
-            mesh_iface.close()
-        except Exception as e:
-            logging.error(f"Error closing Meshtastic interface: {e}")
-            
+
     logging.info("Programma terminato")
 
 def _log_db_error(error_type, description, config):
@@ -989,7 +866,6 @@ if __name__ == '__main__':
 
     config = load_config()
     setup_logging(config)
-    logging.getLogger("meshtastic.serial_interface").setLevel(logging.DEBUG)
     setup_signal_handlers()
     try:
         activate_indicator()
@@ -997,6 +873,5 @@ if __name__ == '__main__':
     except Exception as e:
         logging.critical("Errore fatale: %s", e, exc_info=True)
         sys.exit(1)
-        raise
     finally:
         cleanup_gpio()

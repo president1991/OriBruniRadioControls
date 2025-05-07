@@ -1,4 +1,8 @@
 # OriBruniRadioControls
+## 07/05/2025 v3.0
+Spostata la logica Meshtastic in un servizio a parte per la gestione completa.
+Aggiornamenti Vari
+
 ## 04/05/2025 v2.6
 Modifica script per fare in modo che se anche le porte usb vengono scambiate le porte seriali si aprano correttamente.  
 Aggiunta illuminazione led e segnale acustico all'avvio del punto radio.  

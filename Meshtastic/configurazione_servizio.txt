@@ -1,0 +1,20 @@
+[Unit]
+Description=Meshtastic HTTP Service
+After=network.target
+
+[Service]
+User=pi
+WorkingDirectory=/path/to/your/app
+ExecStart=/usr/bin/env python3 meshtastic_service.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
+
+
+sudo cp meshtastic.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable meshtastic
+sudo systemctl start meshtastic
