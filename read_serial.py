@@ -578,7 +578,6 @@ def process_record(record_id, config, session, db_config):
         return
     executor.submit(send_record_online, record, config, session, db_config)
     executor.submit(send_record_mesh, record, config, None, db_config)
-read
 # --------------------------
 # MONITORAGGIO SISTEMA
 # --------------------------

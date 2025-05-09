@@ -38,8 +38,8 @@ CONFIG_FILE = Path(__file__).parent / 'config.ini'
 
 # Valori di default
 DEFAULT_CONFIG = {
-    'meta': {'config_version': CONFIG_VERSION},
-    'database': {
+    'META': {'config_version': CONFIG_VERSION},
+    'DATABASE': {
         'host': 'localhost',
         'port': '3306',
         'user': 'root',
@@ -47,7 +47,7 @@ DEFAULT_CONFIG = {
         'database': 'OriBruniRadioControls',
         'autocommit': 'True'
     },
-    'callhome': {
+    'CALLHOME': {
         'url': 'https://orienteering.services/radiocontrol/callhome.php',
         'poll_interval': '20',
         'cred_check_interval': '3600',
@@ -115,7 +115,7 @@ def collect_system_metrics():
 
 
 async def create_db_pool(cfg):
-    db = cfg['database']
+    db = cfg['DATABASE']
     pool = await aiomysql.create_pool(
         host=db.get('host'), port=int(db.get('port')),
         user=db.get('user'), password=db.get('password'),
@@ -170,7 +170,7 @@ async def send_keepalive(session, url, name, pkey, dry_run=False):
 
 async def main():
     cfg = load_config()
-    ch = cfg['callhome']
+    ch = cfg['CALLHOME']
     url = ch.get('url')
     poll = ch.getint('poll_interval')
     cred_interval = ch.getint('cred_check_interval')

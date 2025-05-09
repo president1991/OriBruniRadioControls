@@ -1,1 +1,22 @@
 pip install fastapi uvicorn meshtastic pydantic
+
+
+sudo apt update
+sudo apt install python3-fastapi python3-uvicorn python3-pydantic
+
+
+fastapi
+uvicorn[standard]
+meshtastic
+pydantic
+pyserial
+
+
+pip install --break-system-packages fastapi uvicorn[standard] meshtastic pydantic pyserial
+
+
+sudo apt install python3-fastapi
+sudo apt install python3-uvicorn
+sudo apt install python3-meshtastic
+sudo apt install python3-pydantic
+sudo apt install python3-serial
