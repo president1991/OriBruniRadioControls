@@ -1,43 +1,84 @@
 import sys
-import serial.tools.list_ports
+import os
+import json
 import logging
+import serial.tools.list_ports
 from datetime import datetime
+from typing import Optional, Dict, Any, List, Tuple
+from logging.handlers import TimedRotatingFileHandler
+
+from pubsub import pub
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
-    QLabel, QPushButton, QListWidget, QMessageBox, QMenu
+    QLabel, QPushButton, QListWidget, QMessageBox, QMenu, QListWidgetItem
 )
 from PyQt6.QtGui import QAction
 from PyQt6.QtCore import QTimer
-logging.getLogger('matplotlib.font_manager').setLevel(logging.WARNING)
+
 import matplotlib
 matplotlib.use("QtAgg")
-try:
-    from matplotlib.backends.backend_qt6agg import FigureCanvasQTAgg as FigureCanvas
-except ImportError:
-    from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-
 import matplotlib.pyplot as plt
 import networkx as nx
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 
-from .meshtastic_interface import MeshtasticInterface
-from pubsub import pub
-import json
+from .meshtastic_interface import MeshInterface
+from .models import MeshNode
 
-logging.basicConfig(
-    filename='meshdash.log',
-    filemode='a',
-    level=logging.DEBUG,
-    format='%(asctime)s %(levelname)s: %(message)s'
+# Helper to make any packet JSON-friendly
+def get_clean_packet(packet: Any) -> Dict[str, Any]:
+    clean: Dict[str, Any] = {}
+    # If it's already a dict, use its items; otherwise use its __dict__ if available
+    items = packet.items() if isinstance(packet, dict) else getattr(packet, "__dict__", {}).items()
+    for key, val in items:
+        if isinstance(val, (str, int, float, bool, type(None))):
+            clean[key] = val
+        else:
+            # repr anything complex
+            try:
+                clean[key] = repr(val)
+            except Exception:
+                clean[key] = f"<unserializable {type(val).__name__}>"
+    return clean
+
+# Riduce i messaggi di debug per font_manager di matplotlib
+logging.getLogger('matplotlib.font_manager').setLevel(logging.WARNING)
+
+# Configurazione logging con rotazione giornaliera
+LOG_DIR = os.path.expanduser("~/meshdash_logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+log_path = os.path.join(LOG_DIR, "meshdash.log")
+
+timer_handler = TimedRotatingFileHandler(
+    filename=log_path,
+    when="midnight",
+    interval=1,
+    backupCount=7,
+    encoding="utf-8",
+    utc=False
 )
+timer_handler.suffix = "%Y-%m-%d"
+formatter = logging.Formatter(
+    fmt="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+timer_handler.setFormatter(formatter)
+
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.DEBUG)
+# Rimuove handler FileHandler non rotanti
+for h in list(root_logger.handlers):
+    if isinstance(h, logging.FileHandler) and not isinstance(h, TimedRotatingFileHandler):
+        root_logger.removeHandler(h)
+root_logger.addHandler(timer_handler)
 
 class GraphCanvas(FigureCanvas):
-    def __init__(self, parent=None):
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
         self.fig, self.ax = plt.subplots()
         super().__init__(self.fig)
         self.setParent(parent)
         plt.tight_layout()
 
-    def draw_graph(self, links, nodes=None):
+    def draw_graph(self, links: List[Tuple[str, str, float]], nodes: Optional[List[str]] = None) -> None:
         self.ax.clear()
         G = nx.Graph()
         if nodes:
@@ -49,50 +90,78 @@ class GraphCanvas(FigureCanvas):
             nx.draw_networkx_nodes(G, pos, ax=self.ax, node_size=300)
             if G.number_of_edges():
                 max_q = max(d['weight'] for _, _, d in G.edges(data=True))
-                widths = [2*(d['weight']/max_q) for _, _, d in G.edges(data=True)]
+                widths = [2 * (d['weight'] / max_q) for _, _, d in G.edges(data=True)]
                 nx.draw_networkx_edges(G, pos, ax=self.ax, width=widths)
             nx.draw_networkx_labels(G, pos, ax=self.ax)
         self.ax.set_axis_off()
         self.draw()
 
 class MeshDashWindow(QMainWindow):
-    def __init__(self, port=None, refresh_interval=10000):
+    """
+    Finestra principale di MeshDash con cap log limitati,
+    gestione migliorata degli errori e supporto a i18n.
+    """
+    LOG_LIMIT = 100
+
+    def __init__(self, port: Optional[str] = None, refresh_interval: int = 10000) -> None:
         super().__init__()
-        self.setWindowTitle("MeshDash")
+        self.setWindowTitle(self.tr("MeshDash"))
         self.resize(600, 700)
 
-        self.port = port
-        self.interface = None
-
-        # mappa peer_id (pkey) → nome ricevuto dal payload
-        self.name_map: dict[str,str] = {}
-        # archi costruiti manualmente dai neigh_info
-        self.current_links: list[tuple[str,str,float]] = []
+        self.port: Optional[str] = port
+        self.interface: Optional[MeshInterface] = None
+        self.name_map: Dict[str, str] = {}
+        self.current_links: List[Tuple[str, str, float]] = []
 
         central = QWidget()
         self.setCentralWidget(central)
         self.layout = QVBoxLayout(central)
 
-        self.label = QLabel("Dispositivi Meshtastic rilevati:")
+        # Lista dispositivi
+        self.label = QLabel(self.tr("Dispositivi Meshtastic rilevati:"))
         self.device_list = QListWidget()
-        self.refresh_button = QPushButton("Aggiorna")
+        self.refresh_button = QPushButton(self.tr("Aggiorna"))
         self.refresh_button.clicked.connect(self.refresh_all)
 
         self.layout.addWidget(self.label)
         self.layout.addWidget(self.device_list)
         self.layout.addWidget(self.refresh_button)
 
+        # Grafico mesh
         self.graph_canvas = GraphCanvas(self)
         self.layout.addWidget(self.graph_canvas)
 
-        self.log_label = QLabel("Log dei payload:")
+        # Log dei payload
+        self.log_label = QLabel(self.tr("Log dei payload:"))
         self.log_list = QListWidget()
         self.log_list.setFixedHeight(150)
         self.layout.addWidget(self.log_label)
         self.layout.addWidget(self.log_list)
 
-        # timer di auto-refresh
-        self.timer = QTimer()
+        # Menu impostazioni
+        menubar = self.menuBar()
+        settings_menu = menubar.addMenu(self.tr("Impostazioni"))
+        port_menu = QMenu(self.tr("Porta seriale..."), self)
+        settings_menu.addMenu(port_menu)
+        self.port_actions: List[QAction] = []
+        self._populate_port_menu(port_menu)
+         # Se la porta è stata passata da config.ini, connettiti subito
+        if self.port:
+            try:
+                self.interface = MeshInterface(port=self.port)
+                logging.info(f"Connessione automatica a {self.port}")
+                # Aggiorna subito UI
+                self.refresh_all()
+            except Exception as e:
+                self.show_error(
+                    self.tr("Errore porta seriale"),
+                    self.tr(f"Impossibile aprire la porta '{self.port}':\n{e}")
+                )
+                logging.error(f"Errore apertura porta {self.port}: {e}")
+                self.interface = None
+
+        # Auto-refresh
+        self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh_all)
         if refresh_interval > 0:
             self.timer.start(refresh_interval)
@@ -101,20 +170,16 @@ class MeshDashWindow(QMainWindow):
             self.timer.stop()
             logging.info("Timer auto-refresh disabilitato")
 
-        # sottoscriviamo il callback per tutti i pacchetti ricevuti
+        # Sottoscrizioni
         pub.subscribe(self._on_new_payload, "meshtastic.receive")
+        pub.subscribe(self.refresh_graph, "meshdash.new_links")
 
-        pub.subscribe(self.refresh_graph, "meshdash.new_links")  # Modificato
+    def show_error(self, title: str, message: str) -> None:
+        """Mostra un dialogo di errore critico."""
+        QMessageBox.critical(self, self.tr(title), message)
 
-        # menu per scegliere la porta seriale
-        menubar = self.menuBar()
-        settings_menu = menubar.addMenu("Settings")
-        port_menu = QMenu("Serial Port...", self)
-        settings_menu.addMenu(port_menu)
-        self.port_actions = []
-        self._populate_port_menu(port_menu)
-
-    def _populate_port_menu(self, menu: QMenu):
+    def _populate_port_menu(self, menu: QMenu) -> None:
+        """Popola il menu con le porte seriali disponibili."""
         menu.clear()
         self.port_actions.clear()
         for port in serial.tools.list_ports.comports():
@@ -126,152 +191,94 @@ class MeshDashWindow(QMainWindow):
             self.port_actions.append(act)
         menu.setEnabled(bool(self.port_actions))
 
-    def _change_port(self, port: str):
+    def _change_port(self, port: str) -> None:
+        """Cambia la porta seriale e connette l'interfaccia."""
         self.port = port
         for act in self.port_actions:
             act.setChecked(act.text() == port)
         try:
-            self.interface = MeshtasticInterface(port=self.port)
+            self.interface = MeshInterface(port=self.port)
             logging.info(f"Connesso a porta seriale: {self.port}")
             self.refresh_all()
         except Exception as e:
-            QMessageBox.warning(self, "Errore porta seriale",
-                                f"Impossibile aprire la porta '{self.port}':\n{e}")
+            self.show_error(
+                "Errore porta seriale",
+                self.tr(f"Impossibile aprire la porta '{self.port}':\n{e}")
+            )
             logging.error(f"Errore apertura porta {self.port}: {e}")
             self.interface = None
 
-    def refresh_all(self):
+    def refresh_all(self) -> None:
+        """Esegue refresh di dispositivi e grafo."""
         if not self.interface:
             return
+        # Chiedi ai nodi di inviare telemetria (popola interface.nodes)
+        self.interface.request_telemetry()
         self.refresh_devices()
         self.refresh_graph()
-    
-    def refresh_devices(self):
-        """
-        Aggiorna la lista dei dispositivi Meshtastic, mostrando
-        user, id, battery e – se disponibili – i metadati dei neighbors.
-        """
+
+    def refresh_devices(self) -> None:
+        """Aggiorna la lista dispositivi con formato migliorato."""
         try:
-            nodes = self.interface.get_nodes()
             self.device_list.clear()
-
+            nodes = self.interface.get_nodes()
             for node in nodes:
-                # Prendo i metadata salvati in MeshtasticInterface._on_receive_neighbors
-                meta = getattr(self.interface, 'neighbor_data', {}).get(node.id, {})
+                # Otteniamo un'etichetta più leggibile
+                node_id = node.id
+                
+                # Estrai le informazioni dal formato complesso (se disponibile)
+                radio_name = "Sconosciuto"
+                short_name = ""
+                
+                # Mappa dei nomi migliori dai dati grezzi
+                if hasattr(node, 'raw_data') and node.raw_data:
+                    raw_data = node.raw_data
+                    if 'longName' in raw_data:
+                        radio_name = raw_data.get('longName', 'Radio')
+                    if 'shortName' in raw_data:
+                        short_name = f" ({raw_data.get('shortName', '')})"
 
-                # Costruisco una lista di stringhe extra solo per i campi presenti
-                extras = []
-                if 'rx_snr' in meta and meta['rx_snr'] is not None:
-                    extras.append(f"snr:{meta['rx_snr']}")
-                if 'rx_rssi' in meta and meta['rx_rssi'] is not None:
-                    extras.append(f"rssi:{meta['rx_rssi']}")
-                if 'hop_limit' in meta and meta['hop_limit'] is not None:
-                    extras.append(f"hop_limit:{meta['hop_limit']}")
-                if 'hop_start' in meta and meta['hop_start'] is not None:
-                    extras.append(f"hop_start:{meta['hop_start']}")
-                if 'relay_node' in meta and meta['relay_node'] is not None:
-                    extras.append(f"relay:{meta['relay_node']}")
-
-                extras_str = ""
-                if extras:
-                    extras_str = "  •  " + ", ".join(extras)
-
-                # Inserisco l’item con battery e gli extras (se ci sono)
-                self.device_list.addItem(
-                    f"{node.user}: {node.id}  "
-                    f"(Battery: {node.battery_level} %){extras_str}"
-                )
-
+                # Formato semplificato e leggibile
+                battery_info = f" - Batteria: {node.battery_level}%" if node.battery_level > 0 else ""
+                text = f"{radio_name}{short_name} - ID: {node_id[-6:]}{battery_info}"
+                
+                # Aggiungi l'elemento alla lista
+                item = QListWidgetItem(text)
+                item.setToolTip(f"ID completo: {node_id}")
+                self.device_list.addItem(item)
+                
             logging.debug(f"Aggiornati {len(nodes)} dispositivi")
         except Exception as e:
-            QMessageBox.warning(self, "Errore connessione", str(e))
             logging.error(f"Errore in refresh_devices: {e}")
+            self.show_error("Errore connessione", str(e))
 
-    def refresh_graph(self):
+    def refresh_graph(self) -> None:
+        """Aggiorna il grafo della mesh."""
         try:
             links = self.interface.get_links()
-            logging.debug(f"refresh_graph: got links = {links}")
-            nodes = self.interface.get_nodes()
-            logging.debug(f"refresh_graph: nodes = {[n.id for n in nodes]}")
-            logging.debug(f"Links: {links}")
-
-            # Ottieni il tuo ID formattato (se disponibile)
-            my_id = None
-            if self.interface.my_info and hasattr(self.interface.my_info, 'id'):
-                my_id = self.interface._format_peer(self.interface.my_info.id)
-                logging.debug(f"refresh_graph: my_id = {my_id}")
-            else:
-                logging.warning("refresh_graph: Impossibile ottenere l'ID locale da self.interface.my_info")
-
-            # Mappa id → label
-            id_to_label = {n.id: self.name_map.get(n.id, n.user) for n in nodes}
-
-            # Etichetta il nodo locale come "YOU" (se lo troviamo)
-            if my_id and my_id in id_to_label:
-                id_to_label[my_id] = "YOU"
-            elif my_id:
-                logging.warning(f"refresh_graph: Il nodo locale con ID {my_id} non è presente nei nodi rilevati")
-
-            # Prepara gli archi con etichette
-            named = [(id_to_label.get(a, a), id_to_label.get(b, b), q) for a, b, q in links]
-            self.graph_canvas.draw_graph(named, nodes=list(id_to_label.values()))
-
+            nodes = [n.id for n in self.interface.get_nodes()]
+            self.graph_canvas.draw_graph(links, nodes)
         except Exception as e:
-            QMessageBox.warning(self, "Errore grafo", str(e))
             logging.error(f"Errore in refresh_graph: {e}")
+            self.show_error("Errore grafo", str(e))
 
-    def _on_new_payload(self, packet, interface=None):
-        if not self.interface:
-            return
-
-        # 1) Preleva il dict "decoded" (se esiste) o usa direttamente packet
-        raw = packet.get('decoded', packet)
-
-        # 2) Se payload/text sono ancora stringhe JSON, parsale per togliere escape
-        if isinstance(raw, dict):
-            if isinstance(raw.get('payload'), str):
-                try:
-                    raw['payload'] = json.loads(raw['payload'])
-                except json.JSONDecodeError:
-                    pass
-            if isinstance(raw.get('text'), str):
-                try:
-                    raw['text'] = json.loads(raw['text'])
-                except json.JSONDecodeError:
-                    pass
-
-        # 3) Rendilo JSON-serializzabile
-        clean = self.interface._make_jsonable(raw)
-
-        # 4) Estrai eventuale neigh_info (annidato o top-level)
-        info = clean.get('payload') if isinstance(clean.get('payload'), dict) else clean
-
-        # 5) Se è neigh_info, ricava remote_id e my_id formattati e disegna il link
-        if info.get('type') == 'neigh_info' and 'name' in info:
-            # a) remoto: prendo l’ID dal packet, non dal pkey
-            raw_peer  = packet.get('fromId', packet.get('from'))
-            remote_id = self.interface._format_peer(raw_peer)
-            self.name_map[remote_id] = info['name']
-
-            # b) locale: *adesso* my_info è valorizzato
-            try:
-                my_id   = self.interface._format_peer(self.interface.my_info.id)
-                quality = float(info.get('quality', 1.0))
-                self.current_links = [(remote_id, my_id, quality)]
-            except Exception:
-                self.current_links = []
-
-            # c) ridisegna subito (in refresh_graph il nodo locale diventerà "YOU")
-            self.refresh_graph()
-
-        # 6) Log pulito senza backslash
+    def _on_new_payload(self, packet: Any) -> None:
+        """Callback per nuovi pacchetti ricevuti: pulisce e logga."""
+        clean = self._clean_payload(packet)
         try:
             text = json.dumps(clean, ensure_ascii=False)
         except Exception:
             text = str(clean)
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.log_list.insertItem(0, f"{ts} {text}")
+        if self.log_list.count() > self.LOG_LIMIT:
+            self.log_list.takeItem(self.log_list.count() - 1)
         self.log_list.scrollToTop()
+
+    def _clean_payload(self, packet: Any) -> Dict[str, Any]:
+        """Rimuove campi non serializzabili e riduce il payload."""
+        # Logica originale di pulizia...
+        return get_clean_packet(packet)  # implementare separatamente
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

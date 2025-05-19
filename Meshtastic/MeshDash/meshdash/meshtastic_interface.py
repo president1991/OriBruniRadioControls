@@ -1,166 +1,193 @@
-import meshtastic
-import meshtastic.serial_interface
-from pubsub import pub
-from .models import MeshNode
 import json
-from .db_logger import log_message, log_telemetry
-from collections.abc import Mapping
-import logging
 import threading
+import queue
+import logging
+from typing import Any, Dict, List, Optional, Tuple
+from meshtastic.serial_interface import SerialInterface
+from meshtastic import mesh_interface
+from .models import MeshNode
+from pubsub import pub
+from .db_logger import log_message, log_telemetry
 
+logger = logging.getLogger(__name__)
 
-class MeshtasticInterface:
-    def __init__(self, port=None):
-        self.interface = meshtastic.serial_interface.SerialInterface(port)
+class MeshInterfaceWorker(threading.Thread):
+    """
+    Thread to asynchronously process logging tasks to avoid blocking callbacks.
+    """
+    def __init__(self) -> None:
+        super().__init__(daemon=True)
+        self._tasks: "queue.Queue[Dict[str, Any]]" = queue.Queue()
+        self._stop_event = threading.Event()
+
+    def run(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                task = self._tasks.get(timeout=1)
+                if task["type"] == "message":
+                    log_message(task["direction"], task["peer"], task["payload"])
+                elif task["type"] == "telemetry":
+                    log_telemetry(task["peer"], task["metrics"])
+            except queue.Empty:
+                continue
+            except Exception:
+                logger.exception("Error processing log task")
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def enqueue_message(self, direction: str, peer: str, payload: Any) -> None:
+        self._tasks.put({"type": "message", "direction": direction, "peer": peer, "payload": payload})
+
+    def enqueue_telemetry(self, peer: str, metrics: Dict[str, Any]) -> None:
+        self._tasks.put({"type": "telemetry", "peer": peer, "metrics": metrics})
+
+class MeshInterface:
+    """
+    High-level interface for Meshtastic, handling serialization, callbacks,
+    and asynchronous DB logging.
+    """
+    def __init__(self, port: str, baudrate: int = 921600) -> None:
+        self.worker = MeshInterfaceWorker()
+        self.worker.start()
+
         try:
-            self.my_info = self.interface.myInfo
-        except AttributeError:
-            self.my_info = None
-        self._links_buffer: set[tuple[str, str, float]] = set()  # Usa un set per evitare duplicati
-        self._links_buffer_lock = threading.Lock()  # Aggiungi un lock
-        self.neighbor_data: dict[str, dict] = {}
-        self._neighbor_data_lock = threading.Lock()  # Aggiungi un lock
+            # Correzione: usa SerialInterface invece di MeshInterface
+            self.interface = SerialInterface(devPath=port, debugOut=False)
+        except Exception as e:
+            logger.exception("Failed to open serial interface")
+            raise
 
-        # Solo tre sottoscrizioni, senza duplicati:
-        pub.subscribe(self._on_receive_packet,    "meshtastic.receive")
-        pub.subscribe(self._on_receive_neighbors,"meshtastic.receive")
-        pub.subscribe(self._on_receive_telemetry,"meshtastic.receive.telemetry")
+        self._links_buffer: List[Dict[str, Any]] = []
+        self._links_lock = threading.Lock()
 
-    def _make_jsonable(self, obj):
-        # 1) tipi JSON-safe
-        if isinstance(obj, (str, int, float, bool, type(None))):
+        # Subscribe with a single handler and dispatch by packet type
+        pub.subscribe(self._on_receive, "meshtastic.receive")
+
+    def close(self) -> None:
+        """Stop worker and close interface."""
+        self.worker.stop()
+        try:
+            self.interface.close()
+        except Exception:
+            logger.exception("Error closing interface")
+
+    def _make_jsonable(self, obj: Any) -> Any:
+        try:
+            json.dumps(obj)
             return obj
-        # 2) bytes → decode o hex
-        if isinstance(obj, bytes):
-            try:
-                return obj.decode("utf-8")
-            except UnicodeDecodeError:
-                return obj.hex()
-        # 3) Mapping → dict
-        if isinstance(obj, Mapping):
-            return {k: self._make_jsonable(v) for k, v in obj.items()}
-        # 4) lista/tupla → list
-        if isinstance(obj, (list, tuple)):
-            return [self._make_jsonable(v) for v in obj]
-        # 5) oggetti custom → __dict__
-        if hasattr(obj, '__dict__'):
-            return self._make_jsonable(vars(obj))
-        # 6) fallback → stringa
-        return str(obj)
+        except (TypeError, OverflowError):
+            if isinstance(obj, dict):
+                return {self._make_jsonable(k): self._make_jsonable(v) for k, v in obj.items()}
+            if isinstance(obj, (list, tuple)):
+                return [self._make_jsonable(o) for o in obj]
+            return repr(obj)
 
-    def _format_peer(self, peer_id):
-        """
-        Converte l'ID numerico del nodo in stringa HEX formattata 'XXXXXXXX'.
-        Se non è un intero, ritorna str(peer_id).
-        """
+    def _format_peer(self, peer_id: int) -> str:
+        return hex(peer_id)
+
+    def _on_receive(self, packet: Any) -> None:
+        """Unified callback for all packet types."""
         try:
-            pid = int(peer_id)
-            hexstr = f"{pid:08X}"
-            return f"{hexstr[:4]}{hexstr[4:]}"
-        except (ValueError, TypeError):
-            return str(peer_id)
+            peer = self._format_peer(packet.get("from", {}).get("userId", 0))
+            direction = packet.get("when", "unknown")
+            # Log grezzo (sent/received) in background
+            self.worker.enqueue_message(direction, peer, packet)
 
-    def _on_receive_packet(self, packet, interface=None):
-        peer_id = packet.get('from', packet.get('fromId', 'unknown'))
-        peer = self._format_peer(peer_id)
 
-        payload = packet.get('decoded', packet)
-        clean = self._make_jsonable(payload)
-        # Deserializza JSON interno se presente
-        nested = clean.get('payload')
-        if isinstance(nested, str):
-            try:
-                clean['payload'] = json.loads(nested)
-            except json.JSONDecodeError:
-                pass
+            # Handle neighbor info
+#            if packet.get("decoded") and packet["decoded"].get("neigh_info"):  # neigh_info packet
+#                neighbors = packet["decoded"]["neigh_info"].get("neighbors", [])
+#                with self._links_lock:
+#                    self._links_buffer.extend(
+#                        [{"from": peer, "to": self._format_peer(n.get("id")), "rssi": n.get("rssi")} for n in neighbors]
+#                    )
 
-        log_message('received', peer, json.dumps(clean))
+            # Handle TEXT_MESSAGE_APP JSON payloads for neigh_info
+            decoded = packet.get("decoded", {}) or {}
+            text = decoded.get("text") if isinstance(decoded, dict) else None
+            if text:
+                try:
+                    obj = json.loads(text)
+                    if obj.get("type") == "neigh_info":
+                        data_list = obj.get("data", [])
+                        with self._links_lock:
+                            self._links_buffer.extend([
+                                {
+                                    "from": peer,
+                                    "to": self._format_peer(entry.get("id")),
+                                    "rssi": entry.get("rssi"),
+                                }
+                                for entry in data_list
+                            ])
+                        # Notifica subito la GUI di nuovi link
+                        pub.sendMessage("meshdash.new_links")
+                except Exception:
+                    logger.exception("Errore parsing JSON di neigh_info")
 
-        if clean.get('type') == 'neigh_info':
-            sender_id = self._format_peer(packet.get('fromId', packet.get('from')))
+            # Handle telemetry
+#            if packet.get("decoded") and packet["decoded"].get("deviceMetrics"):
+#                metrics = packet["decoded"]["deviceMetrics"]
+#                self.worker.enqueue_telemetry(peer, metrics)
 
-            for neighbor in clean.get('data', []):  # Assumiamo che 'data' sia una lista di vicini
-                target_id = self._format_peer(neighbor.get('node_id'))
-                quality = neighbor.get('link_quality', 1.0)  # Usa un valore di default
+            # Handle structured deviceMetrics (telemetria)
+            if decoded.get("deviceMetrics"):
+                metrics = decoded["deviceMetrics"]
+                self.worker.enqueue_telemetry(peer, metrics)
 
-                # Aggiungi il link in entrambe le direzioni (non diretto)
-                with self._links_buffer_lock:  # Acquisisci il lock prima di accedere a _links_buffer
-                    self._links_buffer.add((sender_id, target_id, quality))
-                    self._links_buffer.add((target_id, sender_id, quality))
+        except (AttributeError, KeyError) as e:
+            logger.warning("Malformed packet received: %s", e)
+        except Exception:
+            logger.exception("Error in receive callback")
 
-            logging.debug(f"ricevuto neigh_info, links: {self._links_buffer}")  # Corretto
-            pub.sendMessage("meshdash.new_links")  # Notifica alla GUI
-
-    def _on_receive_neighbors(self, packet, interface=None):
-        decoded = packet.get("decoded", {})
-        neigh = decoded.get("neighbors")
-        logging.debug(f"_on_receive_neighbors: decoded keys = {list(decoded.keys())}")
-        logging.debug(f"_on_receive_neighbors: neighbors = {neigh}")
-        if not neigh:
-            return
-
-        src = self._format_peer(packet.get("fromId"))
-        for nb in neigh:
-            dst   = self._format_peer(nb.get("nodeId"))
-            snr   = nb.get("snr", 0)
-            entry = (src, dst, snr)
-            with self._links_buffer_lock:  # Acquisisci il lock prima di accedere a _links_buffer
-                if entry not in self._links_buffer:
-                    self._links_buffer.add(entry)  # Usa add per un set
-        with self._neighbor_data_lock:
-            self.neighbor_data[dst] = {  # Acquisisci il lock prima di accedere a neighbor_data
-                "rx_snr":    snr,
-                "rx_rssi":   nb.get("rssi"),
-                "hop_limit": nb.get("hopLimit"),
-                "hop_start": nb.get("hopStart"),
-                "relay_node":nb.get("relayNode"),
-                # …
-            }
-        logging.debug(f"_on_receive_neighbors: links_buffer = {self._links_buffer}")
-        logging.debug(f"_on_receive_neighbors: neighbor_data keys = {list(self.neighbor_data.keys())}")
-        # Se vuoi, notifica subito la GUI:
-        pub.sendMessage("meshdash.new_neighbors")
-
-    def _on_receive_telemetry(self, packet, interface=None):
-        decoded = packet.get('decoded', {})
-        telemetry = decoded.get('telemetry', {})
-        metrics = telemetry.get('deviceMetrics', {})
-
-        peer_id = packet.get('from', packet.get('fromId', 'unknown'))
-        peer = self._format_peer(peer_id)
-        if metrics:
-            log_telemetry(peer, metrics)
-
-        node_num = packet.get('from')
-        node_info = self.interface.nodes.get(node_num)
-        if node_info and metrics:
-            node_info.setdefault('position', {})['batteryLevel'] = metrics.get('batteryLevel')
-
-    def get_nodes(self):
-        nodes = []
-        for node_num, node_info in self.interface.nodes.items():
-            peer = self._format_peer(node_num)
-            #user = node_info.get('user', {}).get('longName', peer)
-            ui   = node_info.get('user', {})
-            # preferisci il nome “shortName” se presente, altrimenti il longName
-            user = ui.get('shortName') or ui.get('longName') or peer
-            battery = node_info.get('position', {}).get('batteryLevel', 'N/A')
-            nodes.append(MeshNode(id=peer, user=user, battery_level=battery))
+    def get_nodes(self) -> List[MeshNode]:
+        """Return a list of MeshNode instances from current interface state."""
+        nodes: List[MeshNode] = []
+        
+        # Correzione: Accedi a nodes attraverso l'interfaccia
+        if hasattr(self.interface, 'nodes'):
+            for node_id, node_info in self.interface.nodes.items():
+                try:
+                    # Estrai i dati grezzi per visualizzazione migliorata
+                    node = MeshNode(
+                        id=str(node_id), 
+                        user=node_info.get('user', 'Unknown'),
+                        battery_level=int(node_info.get('batteryLevel', 0)),
+                        raw_data=node_info  # Mantieni i dati grezzi per un migliore rendering
+                    )
+                    nodes.append(node)
+                except Exception as e:
+                    logger.exception(f"Error parsing node info: {node_info}")
+        else:
+            logger.warning("No nodes attribute in interface")
+            
         return nodes
 
-    def get_links(self) -> list[tuple[str, str, float]]:
-        with self._links_buffer_lock:  # Acquisisci il lock prima di accedere a _links_buffer
-            links = list(self._links_buffer)
+    def get_links(self) -> List[Tuple[str, str, float]]:
+        """Return and clear the current buffered links as tuples."""
+        with self._links_lock:
+            # Converto il formato del buffer in tuple (da, a, qualità)
+            links = [(link["from"], link["to"], float(link.get("rssi", 0))) 
+                     for link in self._links_buffer]
             self._links_buffer.clear()
         return links
 
-    def request_telemetry(self, *args, **kwargs):
-        if not hasattr(self.interface, 'requestTelemetry'):
-            raise NotImplementedError("La richiesta di telemetry non è supportata da questa interfaccia.")
-        self.interface.requestTelemetry(*args, **kwargs)
+    def request_telemetry(self, node_id: Optional[str] = None) -> None:
+        """Request telemetry data for a specific node or broadcast if None."""
+        try:
+            if node_id:
+                self.interface.requestTelemetry(node_id)
+            else:
+                self.interface.sendText("!stats")  # Comando per richiedere statistiche da tutti
+        except Exception as e:
+            logger.exception(f"Failed to request telemetry: {e}")
 
-    def send_text(self, text: str, dest=None):
-        result = self.interface.sendText(text, dest)
-        peer = self._format_peer(dest) if dest is not None else 'broadcast'
-        log_message('sent', peer, text)
-        return result
+    def send_text(self, text: str, destination: Optional[str] = None) -> None:
+        """Send a text message to the network or specific node."""
+        try:
+            if destination:
+                self.interface.sendText(text, destinationId=destination)
+            else:
+                self.interface.sendText(text)
+        except Exception as e:
+            logger.exception(f"Failed to send text: {text}, error: {e}")

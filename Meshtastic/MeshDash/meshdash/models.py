@@ -1,8 +1,16 @@
-class MeshNode:
-    def __init__(self, id, user, battery_level):
-        self.id = id
-        self.user = user
-        self.battery_level = battery_level
+from dataclasses import dataclass, field
+from typing import Dict, Any, Optional
 
-    def __repr__(self):
-        return f"<MeshNode {self.user} ({self.id}) - Battery: {self.battery_level}%>"
+@dataclass
+class MeshNode:
+    """
+    Rappresenta un nodo nella rete mesh Meshtastic
+    con il supporto per attributi aggiuntivi.
+    """
+    id: str
+    user: str = "Sconosciuto"
+    battery_level: int = 0
+    raw_data: Dict[str, Any] = field(default_factory=dict)  # Per conservare i dati grezzi dal dispositivo
+    
+    def __repr__(self) -> str:
+        return f"MeshNode(id={self.id}, user={self.user}, battery={self.battery_level}%)"

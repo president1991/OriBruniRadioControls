@@ -1,4 +1,9 @@
 # OriBruniRadioControls
+
+
+## 17/05/2025 v3.1
+Modifiche su MeshDash
+
 ## 07/05/2025 v3.0
 Spostata la logica Meshtastic in un servizio a parte per la gestione completa.
 Aggiornamenti Vari

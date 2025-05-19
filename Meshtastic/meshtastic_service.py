@@ -107,7 +107,8 @@ def on_receive(pkt, interface):
         'snr': pkt.get('snr'),
         'seen': time.time()
     }
-    logging.debug(f"[mesh] ricevuto da {peer}: RSSI={neighbors[peer]['rssi']}")
+    # Log completa del pacchetto ricevuto
+    logging.info(f"[mesh] pacchetto ricevuto da {peer}: {json.dumps(pkt)}")
 
 # Invia telemetria periodicamente
 def send_telemetry():
@@ -126,8 +127,10 @@ def send_telemetry():
     try:
         mesh.sendText(json.dumps(payload))
         logging.info(f"[mesh] telemetria inviata ({len(neighbors)} vicini) nodo={node_name}")
+        # Log dettagliato del payload di telemetria
+        logging.debug(f"[mesh] telemetria payload: {json.dumps(payload)}")
     except Exception as ex:
-        logging.error(f"[mesh] errore invio telemetria: {ex}")
+        logging.error(f"[mesh] errore invio telemetria: {ex}, payload: {json.dumps(payload)}")
 
 # Thread di telemetria
 def telemetry_loop():
@@ -186,9 +189,12 @@ def shutdown_event():
 def send_payload(payload: Payload):
     """Endpoint per inviare un payload JSON generico sulla mesh."""
     try:
+        # Log del payload in invio
+        logging.info(f"[mesh] invio payload HTTP: {payload.json()}")
         mesh.sendText(json.dumps(payload.dict()))
         return {"status": "sent"}
     except Exception as e:
+        logging.error(f"[mesh] Errore invio payload: {e}, payload: {payload.json()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Avvio dell'applicazione
