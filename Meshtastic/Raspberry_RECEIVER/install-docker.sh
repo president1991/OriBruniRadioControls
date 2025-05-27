@@ -88,24 +88,43 @@ fi
 # Installa i2c-tools
 sudo apt install -y i2c-tools
 
-# Crea directory progetto
+# Installa git se non presente
+log_info "Verifica installazione Git..."
+if ! command -v git &> /dev/null; then
+    sudo apt install -y git
+    log_success "Git installato"
+fi
+
+# Clona repository se non siamo già nella directory del progetto
+if [ ! -f "docker-compose.yml" ]; then
+    log_info "Clone repository OriBruni..."
+    cd "$HOME"
+    if [ -d "OriBruniRadioControls" ]; then
+        log_info "Repository già presente, aggiornamento..."
+        cd OriBruniRadioControls
+        git pull
+    else
+        git clone https://github.com/president1991/OriBruniRadioControls.git
+        cd OriBruniRadioControls
+    fi
+    cd Meshtastic/Raspberry_RECEIVER
+else
+    log_info "Già nella directory del progetto"
+fi
+
+# Crea directory di lavoro
 PROJECT_DIR="$HOME/oribruni-receiver"
-log_info "Creazione directory progetto: $PROJECT_DIR"
+log_info "Creazione directory di lavoro: $PROJECT_DIR"
 mkdir -p "$PROJECT_DIR"
+
+# Copia file progetto nella directory di lavoro
+log_info "Copia file progetto..."
+cp -r * "$PROJECT_DIR/"
 cd "$PROJECT_DIR"
 
 # Crea struttura directory
 log_info "Creazione struttura directory..."
 mkdir -p {data/mysql,logs/nginx,backups,nginx/ssl}
-
-# Copia file progetto (assumendo che siamo nella directory del progetto)
-if [ -f "../docker-compose.yml" ]; then
-    log_info "Copia file progetto..."
-    cp -r ../* .
-else
-    log_warning "File progetto non trovati nella directory parent"
-    log_info "Dovrai copiare manualmente i file del progetto in $PROJECT_DIR"
-fi
 
 # Imposta permessi
 log_info "Configurazione permessi..."

@@ -11,17 +11,16 @@ Guida step-by-step per installare il sistema OriBruni Receiver con Docker su Ras
 
 ## ⚡ Installazione in 5 Passi
 
-### 1️⃣ Copia i File del Progetto
+### 1️⃣ Clona il Repository GitHub
 
-Sul Raspberry Pi, copia tutti i file del progetto in una directory:
+Sul Raspberry Pi, clona direttamente il repository:
 
 ```bash
-# Crea directory di lavoro
-mkdir ~/oribruni-receiver
-cd ~/oribruni-receiver
+# Clona il repository
+git clone https://github.com/president1991/OriBruniRadioControls.git
 
-# Copia qui tutti i file del progetto OriBruni Receiver
-# (Dockerfile, docker-compose.yml, config.ini, ecc.)
+# Vai nella directory del progetto
+cd OriBruniRadioControls/Meshtastic/Raspberry_RECEIVER
 ```
 
 ### 2️⃣ Esegui lo Script di Installazione
