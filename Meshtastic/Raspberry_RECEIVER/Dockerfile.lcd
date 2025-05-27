@@ -16,10 +16,13 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Installa dipendenze di sistema per I2C
+# Installa dipendenze di sistema per I2C e build tools
 RUN apt-get update && apt-get install -y \
     i2c-tools \
     python3-smbus \
+    gcc \
+    python3-dev \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Crea utente non-root
