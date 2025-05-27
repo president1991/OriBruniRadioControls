@@ -25,6 +25,9 @@ from urllib3.util.retry import Retry
 from construct import *
 import RPi.GPIO as GPIO
 
+# Costante per tipo messaggio punches
+PUNCHES_TYPE = 1
+
 # Variabili globali per gestione risorse
 executor = None
 serial_port = None
@@ -540,34 +543,45 @@ def send_record_online(record, config, session, db_config):
     return True
 
 def send_record_mesh(record, config, _unused, db_config):
-    """Invia un record alla mesh tramite il servizio HTTP Meshtastic."""
+    """Invia un record alla mesh tramite l’endpoint /send_raw in formato ';'-separato."""
     name, pkey = get_device_identifiers(db_config)
     if not record or not name or not pkey:
         return False
-    host = config['MESHTASTIC'].get('HTTP_HOST', 'localhost')
-    port = config['MESHTASTIC'].get('HTTP_PORT', '8000')
-    url = f"http://{host}:{port}/send_payload"
-    payload = {
-        'type': 'punch',
-        'timestamp': time.time(),
-        'data': {
-            'name': name,
-            'pkey': pkey,
-            'id': record['id'],
-            'control': record['control'],
-            'card_number': record['card_number'],
-            'punch_time': record['punch_time'].isoformat()
-        }
-    }
+
+    host = config['MESHTASTIC']['HTTP_HOST']
+    port = config['MESHTASTIC']['HTTP_PORT']
+    url = f"http://{host}:{port}/send_raw"       # 🡐 usa send_raw, non send_payload
+
+    timestamp = time.time()
+    punch_time = record['punch_time']
+    if isinstance(punch_time, datetime):
+        punch_time = punch_time.isoformat()
+
+    parts = [
+        str(PUNCHES_TYPE),
+        str(timestamp),
+        name,
+        pkey,
+        str(record['id']),
+        str(record['control']),
+        str(record['card_number']),
+        punch_time
+    ]
+    payload = ";".join(parts)
+
     try:
-        resp = requests.post(url, json=payload, timeout=5)
+        resp = requests.post(
+            url,
+            data=payload,
+            headers={'Content-Type': 'text/plain'},  # 🡐 importante!
+            timeout=5
+        )
         resp.raise_for_status()
-        logging.info(f"✅ [MESH HTTP] Record {record['id']} inviato a {url}")
+        logging.info(f"✅ [MESH HTTP] Record {record['id']} inviato: {payload}")
         return True
     except Exception as e:
-        logging.error(f"❌ [MESH HTTP] Errore invio record {record['id']} a {url}: {e}")
+        logging.error(f"❌ [MESH HTTP] Errore invio record {record['id']}: {e}")
         return False
-
 
 # --------------------------
 # PROCESS RECORD

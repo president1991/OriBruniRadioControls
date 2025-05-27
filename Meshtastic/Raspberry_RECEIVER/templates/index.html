@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MeshDash Web</title>
+  <!-- Caricamento librerie locali per funzionamento offline -->
+  <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/vis-network.min.js') }}"></script>
+  <style>
+    body { margin: 0; font-family: Arial, sans-serif; }
+    #mynetwork { width: 100%; height: 60vh; border: 1px solid #ccc; }
+    #devices { padding: 10px; background: #f9f9f9; max-height: 20vh; overflow-y: auto; }
+    #export-form { padding: 10px; background: #fff; border-top: 1px solid #eee; }
+    #export-form input, #export-form button { margin-right: 8px; margin-bottom: 4px; }
+  </style>
+</head>
+<body>
+  <div id="devices"></div>
+  <div id="mynetwork"></div>
+
+  <div id="export-form">
+    <h3>Esporta Punches</h3>
+    <label>Unit ID: <input type="number" id="unitId" value="0" min="0"></label>
+    <label>Last ID: <input type="number" id="lastId" value="0" min="0"></label>
+    <label>Data: <input type="date" id="date"></label>
+    <label>Ora: <input type="time" id="time"></label>
+    <button id="exportBtn">Scarica</button>
+  </div>
+
+  <script>
+    const socket = io();
+    const container = document.getElementById('mynetwork');
+    const devicesDiv = document.getElementById('devices');
+    let network = null;
+
+    socket.on('state_update', data => {
+      devicesDiv.innerHTML = data.nodes
+        .map(n => `${n.user} (${n.id}) – Battery: ${n.battery_level}%`)
+        .join('<br>');
+
+      const vs = data.nodes.map(n => ({ id: n.id, label: n.user }));
+      const es = data.links.map(([a,b,q]) => ({ from: a, to: b, value: q, title: `q=${q}` }));
+
+      const visData = { nodes: vs, edges: es };
+      const options = { edges: { scaling: { min: 1, max: 10 } }, physics: { stabilization: false } };
+
+      if (!network) {
+        network = new vis.Network(container, visData, options);
+      } else {
+        network.setData(visData);
+      }
+    });
+
+    document.getElementById('exportBtn').addEventListener('click', () => {
+      const unitId = document.getElementById('unitId').value;
+      const lastId = document.getElementById('lastId').value;
+      const date    = document.getElementById('date').value;
+      const time    = document.getElementById('time').value;
+
+      let url = `/export_punches?unitId=${unitId}&lastId=${lastId}`;
+      if (date) url += `&date=${date}`;
+      if (time) url += `&time=${time}`;
+
+      window.open(url, '_blank');
+    });
+  </script>
+</body>
+</html>

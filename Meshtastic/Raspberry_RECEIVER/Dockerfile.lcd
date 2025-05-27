@@ -1,0 +1,53 @@
+# ============================================================================
+# Dockerfile per LCD Display Service
+# ============================================================================
+# Container dedicato per gestione display LCD I2C
+# ============================================================================
+
+FROM python:3.11-slim-bullseye
+
+# Metadata
+LABEL maintainer="OriBruni <support@oribruni.com>"
+LABEL description="OriBruni LCD Display Service"
+LABEL version="1.0.0"
+
+# Variabili di ambiente
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Installa dipendenze di sistema per I2C
+RUN apt-get update && apt-get install -y \
+    i2c-tools \
+    python3-smbus \
+    && rm -rf /var/lib/apt/lists/*
+
+# Crea utente non-root
+RUN groupadd -r oribruni && useradd -r -g oribruni oribruni
+
+# Crea directory applicazione
+WORKDIR /app
+
+# Installa dipendenze Python per LCD
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+    RPLCD==1.3.1 \
+    netifaces==0.11.0 \
+    psutil==5.9.5
+
+# Copia solo i file necessari per LCD
+COPY lcd_display/ ./lcd_display/
+COPY config.ini .
+
+# Imposta permessi
+RUN chown -R oribruni:oribruni /app
+
+# Cambia utente
+USER oribruni
+
+# Health check
+HEALTHCHECK --interval=60s --timeout=10s --start-period=10s --retries=3 \
+    CMD python -c "import sys; sys.exit(0)"
+
+# Comando di avvio
+CMD ["python", "lcd_display/lcd_display.py"]

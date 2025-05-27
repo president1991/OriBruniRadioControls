@@ -1,0 +1,16 @@
+CREATE TABLE IF NOT EXISTS meshtastic_log (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    direction VARCHAR(10) NOT NULL,  -- 'send' o 'receive'
+    msg_type INT NOT NULL,           -- tipo di messaggio
+    event_time DATETIME NOT NULL,    -- timestamp dell'evento
+    node_name VARCHAR(64),           -- nome del nodo
+    peer_id VARCHAR(64),             -- ID del peer (vuoto per messaggi inviati) 
+    payload TEXT,                    -- contenuto del messaggio
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indici per migliorare le query
+CREATE INDEX idx_meshtastic_direction ON meshtastic_log(direction);
+CREATE INDEX idx_meshtastic_msg_type ON meshtastic_log(msg_type);
+CREATE INDEX idx_meshtastic_event_time ON meshtastic_log(event_time);
+CREATE INDEX idx_meshtastic_node_name ON meshtastic_log(node_name);

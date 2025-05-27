@@ -1,0 +1,163 @@
+# ============================================================================
+# .dockerignore per OriBruni Raspberry RECEIVER
+# ============================================================================
+# Esclude file non necessari dal build context Docker
+# ============================================================================
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+README.md
+ANALISI_PROGETTO.md
+*.md
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# Data directories
+data/
+backups/
+*.db
+*.sqlite
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Nginx config (mounted as volume)
+nginx/
+
+# SQL scripts (mounted as volume)
+sql/
+
+# Scripts (mounted as volume)
+scripts/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Backup files
+*.bak
+*.backup
+
+# Config files with sensitive data
+config.ini.local
+.env
+.env.local
+.env.production
+
+# Test files
+test/
+tests/
+*_test.py
+test_*.py
+
+# Coverage reports
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# PEP 582
+__pypackages__/
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Installation scripts
+install.sh
+install_*.sh
+install_*.bat
+
+# Large files
+*.iso
+*.img
+*.tar
+*.tar.gz
+*.zip
+*.rar

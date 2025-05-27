@@ -1,0 +1,22 @@
+[Unit]
+Description=OriBruni LCD Display Service
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=radiocontrol
+Group=radiocontrol
+WorkingDirectory=/home/radiocontrol/lcd_display
+ExecStart=/usr/bin/python3 /home/radiocontrol/lcd_display/lcd_display.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Variabili d'ambiente
+Environment=PYTHONPATH=/home/radiocontrol/lcd_display
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
