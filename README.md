@@ -1,5 +1,40 @@
 # OriBruniRadioControls
 
+## 27/05/2025 v4.0 - Docker Edition
+### Implementazione completa soluzione Docker per Raspberry RECEIVER
+Creata soluzione Docker professionale per il sistema OriBruni Receiver:
+- **Docker Compose** con MySQL 8.0, phpMyAdmin, Nginx, App Python
+- **Installazione automatica** con script `install-docker.sh`
+- **Backup automatici** con retention 30 giorni
+- **Monitoraggio integrato** con health checks
+- **Makefile** con comandi semplificati (make up, make down, make logs, etc.)
+- **SSL ready** con certificati auto-generati
+- **Display LCD I2C** supportato con container dedicato
+- **Installazione one-liner** da repository GitHub
+- **Guide complete** di installazione e configurazione
+
+### File aggiunti:
+- `Meshtastic/Raspberry_RECEIVER/docker-compose.yml` - Orchestrazione servizi
+- `Meshtastic/Raspberry_RECEIVER/Dockerfile` - Container applicazione
+- `Meshtastic/Raspberry_RECEIVER/Dockerfile.lcd` - Container display LCD
+- `Meshtastic/Raspberry_RECEIVER/Makefile` - Comandi gestione
+- `Meshtastic/Raspberry_RECEIVER/install-docker.sh` - Script installazione automatica
+- `Meshtastic/Raspberry_RECEIVER/INSTALLAZIONE_ONE_LINER.md` - Guida installazione rapida
+- `Meshtastic/Raspberry_RECEIVER/INSTALLAZIONE_RAPIDA.md` - Guida dettagliata
+- `Meshtastic/Raspberry_RECEIVER/DOCKER_README.md` - Documentazione tecnica
+- `Meshtastic/Raspberry_RECEIVER/nginx/nginx.conf` - Configurazione reverse proxy
+- `Meshtastic/Raspberry_RECEIVER/sql/init.sql` - Inizializzazione database
+- `Meshtastic/Raspberry_RECEIVER/scripts/backup.sh` - Script backup automatico
+
+### Installazione ultra-rapida:
+```bash
+sudo apt update && sudo apt install -y git
+git clone https://github.com/president1991/OriBruniRadioControls.git
+cd OriBruniRadioControls/Meshtastic/Raspberry_RECEIVER
+chmod +x install-docker.sh && ./install-docker.sh
+sudo reboot
+cd ~/oribruni-receiver && make up
+```
 
 ## 17/05/2025 v3.1
 Modifiche su MeshDash
