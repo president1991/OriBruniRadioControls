@@ -1,0 +1,58 @@
+# ============================================================================
+# Dockerfile VELOCE per LCD Display Service
+# ============================================================================
+# Versione ottimizzata che usa pacchetti pre-compilati per velocizzare il build
+# ============================================================================
+
+FROM python:3.11-slim-bullseye
+
+# Metadata
+LABEL maintainer="OriBruni <support@oribruni.com>"
+LABEL description="OriBruni LCD Display Service - Fast Build"
+LABEL version="1.0.1"
+
+# Variabili di ambiente
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Installa dipendenze di sistema per I2C
+RUN apt-get update && apt-get install -y \
+    i2c-tools \
+    python3-smbus \
+    && rm -rf /var/lib/apt/lists/*
+
+# Crea utente non-root
+RUN groupadd -r oribruni && useradd -r -g oribruni oribruni
+
+# Crea directory applicazione
+WORKDIR /app
+
+# Installa dipendenze Python SENZA compilazione (usa wheel pre-compilati)
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir --only-binary=all \
+    RPLCD==1.3.1 || pip install --no-cache-dir RPLCD==1.3.1
+
+# Installa psutil e netifaces da wheel se disponibili, altrimenti salta
+RUN pip install --no-cache-dir --only-binary=all psutil==5.9.5 || echo "Skipping psutil compilation" && \
+    pip install --no-cache-dir --only-binary=all netifaces==0.11.0 || echo "Skipping netifaces compilation"
+
+# Se le dipendenze sopra falliscono, usa versioni alternative più leggere
+RUN pip install --no-cache-dir requests || true
+
+# Copia solo i file necessari per LCD
+COPY lcd_display/ ./lcd_display/
+COPY config.ini .
+
+# Imposta permessi
+RUN chown -R oribruni:oribruni /app
+
+# Cambia utente
+USER oribruni
+
+# Health check semplificato
+HEALTHCHECK --interval=60s --timeout=10s --start-period=10s --retries=3 \
+    CMD python -c "import sys; sys.exit(0)"
+
+# Comando di avvio
+CMD ["python", "lcd_display/lcd_display.py"]
