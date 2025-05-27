@@ -1,25 +1,29 @@
 # 🚀 Installazione OriBruni Receiver Docker da GitHub
 
-## ⚡ Installazione Ultra-Rapida (2 Comandi)
+## ⚡ Installazione Ultra-Rapida (3 Comandi)
 
 Sul tuo Raspberry Pi, esegui questi comandi per installare tutto automaticamente:
 
 ```bash
-# 1. Clona repository e vai nella directory
+# 1. Installa Git (se non presente)
+sudo apt update && sudo apt install -y git
+
+# 2. Clona repository e vai nella directory
 git clone https://github.com/president1991/OriBruniRadioControls.git
 cd OriBruniRadioControls/Meshtastic/Raspberry_RECEIVER
 
-# 2. Esegui installazione automatica
+# 3. Esegui installazione automatica
 chmod +x install-docker.sh && ./install-docker.sh
 ```
 
 ### Cosa fanno questi comandi:
-1. ✅ Clona il repository OriBruni da GitHub
-2. ✅ Installa Docker e Docker Compose
-3. ✅ Configura I2C per display LCD
-4. ✅ Crea struttura directory ottimizzata
-5. ✅ Imposta permessi corretti
-6. ✅ Prepara tutto per l'avvio
+1. ✅ Installa Git per clonare il repository
+2. ✅ Clona il repository OriBruni da GitHub
+3. ✅ Installa Docker e Docker Compose
+4. ✅ Configura I2C per display LCD
+5. ✅ Crea struttura directory ottimizzata
+6. ✅ Imposta permessi corretti
+7. ✅ Prepara tutto per l'avvio
 
 ### Dopo l'installazione:
 ```bash
@@ -34,6 +38,11 @@ make up
 ---
 
 ## 🔧 Installazione Passo-Passo (se preferisci)
+
+### Passo 0: Installa Git
+```bash
+sudo apt update && sudo apt install -y git
+```
 
 ### Passo 1: Clona Repository
 ```bash
@@ -137,6 +146,11 @@ Se hai un display LCD I2C 20x4:
 ---
 
 ## 🆘 Risoluzione Problemi
+
+### Git non trovato
+```bash
+sudo apt update && sudo apt install -y git
+```
 
 ### Container non si avvia
 ```bash
@@ -260,6 +274,23 @@ Se hai problemi:
 - `~/oribruni-receiver/logs/meshdash.log`
 - `~/oribruni-receiver/logs/nginx/access.log`
 - `~/oribruni-receiver/logs/nginx/error.log`
+
+---
+
+## 🚀 Installazione One-Liner Completa
+
+Se vuoi fare tutto in un comando:
+
+```bash
+sudo apt update && sudo apt install -y git && git clone https://github.com/president1991/OriBruniRadioControls.git && cd OriBruniRadioControls/Meshtastic/Raspberry_RECEIVER && chmod +x install-docker.sh && ./install-docker.sh
+```
+
+Poi riavvia e avvia:
+```bash
+sudo reboot
+cd ~/oribruni-receiver
+make up
+```
 
 ---
 
