@@ -6,8 +6,6 @@
 # SICUREZZA: Usa variabili d'ambiente dal file .env
 # ============================================================================
 
-version: '3.8'
-
 services:
   # Database MySQL
   mysql:
@@ -37,7 +35,6 @@ services:
   # phpMyAdmin
   phpmyadmin:
     image: phpmyadmin/phpmyadmin:latest
-    platform: linux/arm64/v8 # Specificare la piattaforma per Raspberry Pi
     container_name: oribruni-phpmyadmin
     restart: unless-stopped
     environment:
