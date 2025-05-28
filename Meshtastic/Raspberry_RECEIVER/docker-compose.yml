@@ -56,9 +56,7 @@ services:
 
   # Applicazione Python OriBruni Receiver
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/YOUR_GITHUB_USERNAME/oribruni-receiver-app:latest # MODIFIED: Build on server, pull from GHCR
     container_name: oribruni-receiver
     restart: unless-stopped
     environment:
@@ -110,9 +108,7 @@ services:
 
   # Servizio LCD Display (opzionale)
   lcd-display:
-    build:
-      context: .
-      dockerfile: Dockerfile.lcd
+    image: ghcr.io/YOUR_GITHUB_USERNAME/oribruni-lcd-display:latest # MODIFIED: Build on server, pull from GHCR
     container_name: oribruni-lcd
     restart: unless-stopped
     environment:
