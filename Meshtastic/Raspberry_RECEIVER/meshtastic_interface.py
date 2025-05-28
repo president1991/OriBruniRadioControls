@@ -24,7 +24,7 @@ class MeshtasticInterface:
             port = detected
 
         # Istanzia l'interfaccia serale con la porta (determinata o passata)
-        self.iface = serial_interface.SerialInterface(port=port)
+        self.iface = serial_interface.SerialInterface(devPath=port) # Argomento corretto è devPath
 
         # Pool di connessioni MySQL
         self.mysql_pool = pooling.MySQLConnectionPool(

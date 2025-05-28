@@ -124,6 +124,8 @@ services:
     networks:
       - oribruni-network
     privileged: true
+    group_add:
+      - "994" # Aggiunge l'utente del container al gruppo i2c dell'host (GID 994)
     depends_on:
       - app
 
