@@ -4,7 +4,11 @@ Sistema completo per ricevere e gestire dati da dispositivi Meshtastic, specific
 
 ## 🚀 Installazione Docker (CONSIGLIATA)
 
-### ⚡ Installazione Ultra-Rapida
+**Nota Importante sul Processo di Build Docker:**
+Le immagini Docker per i servizi personalizzati di questo progetto (`app` e `lcd-display`) sono ora pensate per essere buildate su una macchina esterna più potente (es. un server Linux) e pushate su un registro Docker (come GitHub Container Registry - GHCR). Il Raspberry Pi scaricherà (`pull`) queste immagini pre-compilate. Questo approccio accelera significativamente i tempi di deployment sul Raspberry Pi.
+Per i dettagli completi sul nuovo flusso di build e deployment, consulta il file `DOCKER_README.md`.
+
+### ⚡ Installazione Ultra-Rapida (per il Raspberry Pi - ambiente di runtime)
 
 ```bash
 # 1. Installa Git (se necessario)
@@ -251,17 +255,26 @@ df -h
 
 ### Aggiornamenti
 ```bash
-# Docker
-cd ~/OriBruniRadioControls
-git pull
-cd ~/oribruni-receiver
-make update
+# Docker (con build remoto)
+# 1. Sul server di build:
+#    cd path/to/OriBruniRadioControls
+#    git pull
+#    cd Meshtastic/Raspberry_RECEIVER
+#    # Ricostruisci e pusha le immagini Docker necessarie (app, lcd-display) su GHCR
+#    # Esempio: docker buildx build --platform linux/arm64 -t ghcr.io/tuo-username/oribruni-receiver-app:latest --push -f Dockerfile .
+#
+# 2. Sul Raspberry Pi:
+#    cd ~/OriBruniRadioControls/Meshtastic/Raspberry_RECEIVER # O dove hai clonato il progetto
+#    git pull # Per aggiornare docker-compose.yml se necessario
+#    sudo docker compose pull # Scarica le immagini aggiornate da GHCR
+#    sudo docker compose up -d --force-recreate # Riavvia i servizi con le nuove immagini
 
 # Tradizionale
-cd /opt/oribruni-receiver
+cd /opt/oribruni-receiver # O il percorso della tua installazione tradizionale
 git pull
-source venv/bin/activate
+source venv/bin/activate # Se usi un ambiente virtuale
 pip install --upgrade -r requirements.txt
+# Potrebbe essere necessario riavviare il servizio manualmente
 ```
 
 ---
