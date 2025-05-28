@@ -36,17 +36,20 @@ services:
 
   # phpMyAdmin
   phpmyadmin:
-    image: phpmyadmin/phpmyadmin:latest
-    platform: linux/arm64/v8 # Specificare la piattaforma per Raspberry Pi
+    image: linuxserver/phpmyadmin:latest # Usare immagine alternativa da LinuxServer.io
+    # platform: linux/arm64/v8 # Solitamente non necessario per immagini linuxserver
     container_name: oribruni-phpmyadmin
     restart: unless-stopped
     environment:
-      PMA_HOST: mysql
-      PMA_PORT: 3306
-      PMA_USER: root
-      PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      UPLOAD_LIMIT: 100M
+      PMA_HOST: mysql # Mantenuto, potrebbe funzionare
+      # PMA_PORT: 3306 # Solitamente non necessario se PMA_HOST è specificato
+      # PMA_USER: root # Le immagini LinuxServer potrebbero avere default diversi o usare PUID/PGID
+      # PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD} # Mantenuto per compatibilità, ma verificare documentazione linuxserver
+      UPLOAD_LIMIT: 100M # Mantenuto
+      # PUID: 1000 # Esempio, da impostare con l'ID del tuo utente
+      # PGID: 1000 # Esempio, da impostare con l'ID del tuo gruppo
+      DB_ENGINE: mysql # Specifica il tipo di database per linuxserver/phpmyadmin
     ports:
       - "8080:80"
     networks:

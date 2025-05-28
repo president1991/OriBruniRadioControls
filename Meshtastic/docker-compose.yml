@@ -34,7 +34,8 @@ services:
 
   # phpMyAdmin
   phpmyadmin:
-    image: phpmyadmin/phpmyadmin:latest
+    image: linuxserver/phpmyadmin:latest # Usare immagine alternativa da LinuxServer.io
+    # platform: linux/arm64/v8 # Solitamente non necessario per immagini linuxserver
     container_name: oribruni-phpmyadmin
     restart: unless-stopped
     environment:

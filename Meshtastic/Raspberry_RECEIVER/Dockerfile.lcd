@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     python3-dev \
     gcc \
+    # python3-smbus è una dipendenza di sistema, ma RPLCD potrebbe cercare il pacchetto pip
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -28,7 +29,8 @@ RUN pip install --no-cache-dir --upgrade pip wheel
 # to define dependencies for the LCD service
 RUN echo "RPLCD==1.3.1" > requirements_lcd.txt && \
     echo "netifaces==0.11.0" >> requirements_lcd.txt && \
-    echo "psutil==5.9.5" >> requirements_lcd.txt
+    echo "psutil==5.9.5" >> requirements_lcd.txt && \
+    echo "smbus2==0.4.2" >> requirements_lcd.txt # AGGIUNTO SMBUS2
 
 # Build wheels for LCD dependencies
 RUN pip wheel --no-cache-dir -r requirements_lcd.txt -w /app/wheels
@@ -43,7 +45,8 @@ LABEL stage="final"
 LABEL maintainer="OriBruni <support@oribruni.com>"
 LABEL description="OriBruni LCD Display Service"
 # Consider updating version for new build strategy
-LABEL version="1.0.1"
+# Incrementato versione per modifica
+LABEL version="1.0.2"
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -66,7 +69,8 @@ COPY --from=builder /app/wheels /wheels
 # Create a temporary requirements_lcd.txt again for installing from wheels
 RUN echo "RPLCD==1.3.1" > requirements_lcd.txt && \
     echo "netifaces==0.11.0" >> requirements_lcd.txt && \
-    echo "psutil==5.9.5" >> requirements_lcd.txt
+    echo "psutil==5.9.5" >> requirements_lcd.txt && \
+    echo "smbus2==0.4.2" >> requirements_lcd.txt # AGGIUNTO SMBUS2
 
 # Install Python packages from local wheels
 RUN pip install --no-cache-dir --upgrade pip && \
