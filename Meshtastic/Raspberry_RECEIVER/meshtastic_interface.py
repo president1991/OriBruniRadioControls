@@ -63,55 +63,63 @@ class MeshtasticInterface:
         _, f1, f2, f3 = parts[:4]
 
         # Inserimento in messages per tutti i tipi
-        cnx = self.mysql_pool.get_connection()
-        cursor = cnx.cursor()
-        insert_msgs = (
-            "INSERT INTO messages"
-            " (timestamp, node_eui, field1, field2, field3, raw)"
-            " VALUES (%s, %s, %s, %s, %s, %s)"
-        )
-        cursor.execute(insert_msgs, (
-            ts_msg,
-            packet.get('source', {})
-                  .get('properties', {})
-                  .get('node_eui'),
-            f1, f2, f3,
-            payload
-        ))
-        cnx.commit()
-        cursor.close()
-        cnx.close()
-
-        # Se è punches, inserisci anche in punches
-        if msg_type == PUNCHES_TYPE:
-            while len(parts) < 8:
-                parts.append(None)
-            _, ts_str, name, pkey, rec_id, control, card_number, punch_time = parts[:8]
-            try:
-                ts_p = datetime.fromisoformat(ts_str)
-            except Exception:
-                ts_p = datetime.utcnow()
-
+        cnx = None  # Inizializza cnx a None
+        try:
             cnx = self.mysql_pool.get_connection()
             cursor = cnx.cursor()
-            insert_punch = (
-                "INSERT INTO punches"
-                " (timestamp, name, pkey, record_id, control, card_number, punch_time, raw)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+            insert_msgs = (
+                "INSERT INTO messages"
+                " (timestamp, node_eui, field1, field2, field3, raw)"
+                " VALUES (%s, %s, %s, %s, %s, %s)"
             )
-            cursor.execute(insert_punch, (
-                ts_p,
-                name,
-                pkey,
-                rec_id,
-                control,
-                card_number,
-                punch_time,
+            cursor.execute(insert_msgs, (
+                ts_msg,
+                packet.get('source', {})
+                      .get('properties', {})
+                      .get('node_eui'),
+                f1, f2, f3,
                 payload
             ))
-            cnx.commit()
+            # Non fare cnx.commit() qui se hai autocommit=True nel pool o se lo fai dopo l'insert punches
+
+            # Se è punches, inserisci anche in punches
+            if msg_type == PUNCHES_TYPE:
+                while len(parts) < 8:
+                    parts.append(None)
+                _, ts_str, name, pkey, rec_id, control, card_number, punch_time = parts[:8]
+                try:
+                    ts_p = datetime.fromisoformat(ts_str)
+                except Exception:
+                    ts_p = datetime.utcnow()
+
+                # Non c'è bisogno di prendere una nuova connessione se usi la stessa
+                insert_punch = (
+                    "INSERT INTO punches"
+                    " (timestamp, name, pkey, record_id, control, card_number, punch_time, raw)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+                )
+                cursor.execute(insert_punch, (
+                    ts_p,
+                    name,
+                    pkey,
+                    rec_id,
+                    control,
+                    card_number,
+                    punch_time,
+                    payload
+                ))
+            
+            cnx.commit() # Commit alla fine dopo tutte le operazioni
             cursor.close()
-            cnx.close()
+
+        except mysql.connector.Error as err:
+            logging.error(f"Errore MySQL in _on_receive: {err}")
+        except Exception as e:
+            logging.error(f"Errore generico in _on_receive: {e}")
+        finally:
+            if cnx and cnx.is_connected(): # Assicurati che la connessione esista e sia aperta prima di chiuderla
+                cnx.close()
+                logging.debug("Connessione MySQL restituita al pool.")
 
 # Note: Assicurati di aver creato le tabelle SQL:
 #
