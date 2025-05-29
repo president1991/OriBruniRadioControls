@@ -122,7 +122,7 @@ cd /opt/oribruni-receiver
 sudo cp -r /path/to/Raspberry_RECEIVER/* .
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt # Questo installerà tutte le dipendenze, inclusa PyPubSub per la gestione eventi Meshtastic
 ```
 
 ---
