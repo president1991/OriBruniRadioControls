@@ -4,6 +4,7 @@ import mysql.connector
 from mysql.connector import pooling
 from datetime import datetime
 from meshtastic import serial_interface
+from pubsub import pub # AGGIUNTO import per pubsub
 
 # Costante per il tipo "punches"
 PUNCHES_TYPE = '1'
@@ -38,10 +39,12 @@ class MeshtasticInterface:
             charset='utf8mb4'
         )
 
-        # Registriamo il callback per i pacchetti ricevuti
-        self.iface.onReceiveTxPacket(self._on_receive)
+        # Registriamo il callback per i pacchetti ricevuti usando pubsub
+        # self.iface.onReceiveTxPacket(self._on_receive) # VECCHIO MODO
+        pub.subscribe(self._on_receive, "meshtastic.receive") # NUOVO MODO con pubsub
+        logging.info("Sottoscrizione a meshtastic.receive completata.")
 
-    def _on_receive(self, packet, interface):
+    def _on_receive(self, packet, interface): # La firma dovrebbe essere compatibile
         """
         Packet handler: prende payload formattato con ';', salva sempre il messaggio
         in messages, e se è punches anche in punches.
