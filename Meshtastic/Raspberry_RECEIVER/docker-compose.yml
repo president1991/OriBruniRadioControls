@@ -74,7 +74,7 @@ services:
     volumes:
       - ./config.ini:/app/config.ini:ro
       - ./logs:/app/logs
-      - /dev:/dev  # Per accesso dispositivi seriali
+      # - /dev:/dev  # Rimosso, usiamo mappatura specifica del dispositivo sotto
     ports:
       - "5000:5000"
     networks:
@@ -83,7 +83,10 @@ services:
       mysql:
         condition: service_healthy
     privileged: true  # Necessario per accesso I2C e seriale
+    group_add:
+      - "20" # SOSTITUISCI 20 con il GID effettivo di 'dialout' sull'host
     devices:
+      - /dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_Controller_0001-if00-port0:/dev/ttyUSB0 # Mappa specifica del dispositivo Meshtastic
       - /dev/i2c-1:/dev/i2c-1  # Per display LCD
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/"]
