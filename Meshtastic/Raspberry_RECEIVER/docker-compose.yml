@@ -60,7 +60,7 @@ services:
 
   # Applicazione Python OriBruni Receiver
   app:
-    image: ghcr.io/president1991/oribruni-receiver-app:latest # MODIFIED: Build on server, pull from GHCR
+    image: ghcr.io/president1991/oribruni-receiver-app:v1.0.2-pubsubfix # MODIFIED: Build on server, pull from GHCR
     container_name: oribruni-receiver
     restart: unless-stopped
     environment:
