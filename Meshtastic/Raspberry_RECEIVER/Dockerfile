@@ -50,12 +50,14 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Install only essential runtime system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends --fix-missing \
     i2c-tools \
-    python3-smbus \
+    python3-smbus && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
     # libmariadbclient-dev might be needed if mysql-connector-python relies on it at runtime
     # For now, assuming wheels are self-contained or pure Python part works.
-    && rm -rf /var/lib/apt/lists/*
 
 # Crea utente non-root
 RUN groupadd -r oribruni && useradd --no-log-init -r -g oribruni oribruni
