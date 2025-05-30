@@ -53,6 +53,12 @@ def background_state_updater():
         links_data = [] # Placeholder, da implementare se get_links() non esiste o va cambiato
         if hasattr(iface, 'iface') and iface.iface and hasattr(iface.iface, 'links'):
              links_data = list(iface.iface.links.values())
+        
+        # Log per debug della struttura dei nodi
+        if nodes_data:
+            logging.info(f"Dati nodi inviati via SocketIO: {json.dumps(nodes_data, indent=2)}")
+        else:
+            logging.info("Nessun dato nodo da inviare via SocketIO.")
 
 
         socketio.emit('state_update', {'nodes': nodes_data, 'links': links_data})

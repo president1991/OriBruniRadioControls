@@ -6,8 +6,6 @@
 # SICUREZZA: Usa variabili d'ambiente dal file .env
 # ============================================================================
 
-version: '3.8'
-
 services:
   # Database MySQL
   mysql:
@@ -60,7 +58,7 @@ services:
 
   # Applicazione Python OriBruni Receiver
   app:
-    image: ghcr.io/president1991/oribruni-receiver-app:v1.0.5-appfix # MODIFIED: Build on server, pull from GHCR
+    image: ghcr.io/president1991/oribruni-receiver-app:v1.0.6-nodedebug # MODIFIED: Build on server, pull from GHCR
     container_name: oribruni-receiver
     restart: unless-stopped
     environment:
