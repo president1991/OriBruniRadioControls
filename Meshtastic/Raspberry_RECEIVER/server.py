@@ -35,9 +35,27 @@ iface = MeshtasticInterface(port=serial_port, config={'mysql': mysql_cfg})
 
 def background_state_updater():
     while True:
-        nodes = [n.__dict__ for n in iface.get_nodes()]
-        links = iface.get_links()
-        socketio.emit('state_update', {'nodes': nodes, 'links': links})
+        # Accedi ai nodi tramite l'istanza interna della libreria Meshtastic (iface.iface)
+        # e usa _asdict() se disponibile, o gestisci l'oggetto nodo direttamente
+        nodes_data = []
+        if hasattr(iface, 'iface') and iface.iface and hasattr(iface.iface, 'nodes'):
+            for node_id, node_obj in iface.iface.nodes.items():
+                if hasattr(node_obj, '_asdict'):
+                    nodes_data.append(node_obj._asdict())
+                elif isinstance(node_obj, dict):
+                    nodes_data.append(node_obj)
+                else:
+                    # Fallback o log se il formato del nodo non è previsto
+                    logging.warning(f"Formato nodo non gestito per node_id: {node_id}")
+        
+        # links = iface.get_links() # Assumendo che iface (MeshtasticInterface) abbia un metodo get_links()
+                                  # o iface.iface.links se è un attributo diretto
+        links_data = [] # Placeholder, da implementare se get_links() non esiste o va cambiato
+        if hasattr(iface, 'iface') and iface.iface and hasattr(iface.iface, 'links'):
+             links_data = list(iface.iface.links.values())
+
+
+        socketio.emit('state_update', {'nodes': nodes_data, 'links': links_data})
         time.sleep(2)
 
 @app.route('/')

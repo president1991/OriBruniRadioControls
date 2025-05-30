@@ -73,13 +73,11 @@ class MeshtasticInterface:
                 " VALUES (%s, %s, %s, %s, %s, %s)"
             )
             cursor.execute(insert_msgs, (
-                ts_msg,
-                packet.get('source', {})
-                      .get('properties', {})
-                      .get('node_eui'),
-                f1, f2, f3,
-                payload
-            ))
+            ts_msg,
+            packet.get('source', {}).get('properties', {}).get('node_eui', 'UNKNOWN_NODE_EUI'), # Default se node_eui è None
+            f1, f2, f3,
+            payload
+        ))
             # Non fare cnx.commit() qui se hai autocommit=True nel pool o se lo fai dopo l'insert punches
 
             # Se è punches, inserisci anche in punches
