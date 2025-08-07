@@ -1,391 +1,103 @@
-# OriBruni Raspberry RECEIVER
+# Meshtastic Raspberry Receiver
 
-Sistema completo per ricevere e gestire dati da dispositivi Meshtastic, specificamente progettato per il controllo radio in eventi di orienteering.
+## Overview
+This project sets up a Flask server on a Raspberry Pi to receive and display data from a Meshtastic mesh network. It provides a web interface to view recent messages and punches stored in a MySQL database, making it ideal for monitoring radio control data in real-time.
 
-## 🚀 Installazione Docker (CONSIGLIATA)
+## Purpose
+The Meshtastic Raspberry Receiver is designed to:
+- Collect data from Meshtastic devices connected to the Raspberry Pi.
+- Store this data in a local MySQL database for historical tracking.
+- Serve a web dashboard to visualize recent messages and punch data in an accessible, user-friendly format.
 
-**Nota Importante sul Processo di Build Docker:**
-Le immagini Docker per i servizi personalizzati di questo progetto (`app` e `lcd-display`) sono ora pensate per essere buildate su una macchina esterna più potente (es. un server Linux) e pushate su un registro Docker (come GitHub Container Registry - GHCR). Il Raspberry Pi scaricherà (`pull`) queste immagini pre-compilate. Questo approccio accelera significativamente i tempi di deployment sul Raspberry Pi.
-Per i dettagli completi sul nuovo flusso di build e deployment, consulta il file `DOCKER_README.md`.
+## Features
+- **Web Dashboard**: Displays recent messages and punches with a clean, modern interface.
+- **Database Integration**: Stores data in MySQL for persistence and querying.
+- **Real-Time Updates**: Automatically refreshes data every 5 seconds to show the latest information.
 
-### ⚡ Installazione Ultra-Rapida (per il Raspberry Pi - ambiente di runtime)
+## Requirements
+- Raspberry Pi (any model with network connectivity)
+- Python 3.x
+- MySQL Server (local or remote)
+- Flask and Flask-SocketIO libraries
+- Access to a Meshtastic mesh network (optional for database-only mode)
 
+## Installation
+
+### 1. Clone or Copy Files
+Transfer the contents of this directory to your Raspberry Pi. You can use `scp` or manually copy the files to a directory like `/home/radiocontrol/RECEIVER`.
+
+Example using `scp` from a local machine:
 ```bash
-# 1. Installa Git (se necessario)
-sudo apt update && sudo apt install -y git
-
-# 2. Clona repository
-git clone https://github.com/president1991/OriBruniRadioControls.git
-cd OriBruniRadioControls/Meshtastic/Raspberry_RECEIVER
-
-# 3. Configura password sicure
-cp .env.example .env
-nano .env  # Inserisci password generate con: openssl rand -base64 32
-
-# 4. Esegui installazione automatica
-chmod +x install-docker.sh && ./install-docker.sh
-
-# 5. Riavvia e avvia
-sudo reboot
-cd ~/oribruni-receiver && make up
+scp -r Meshtastic/Raspberry_RECEIVER/* radiocontrol@<Raspberry_Pi_IP>:/home/radiocontrol/RECEIVER/
 ```
+Replace `<Raspberry_Pi_IP>` with the IP address of your Raspberry Pi.
 
-### 🔒 IMPORTANTE - Sicurezza
+### 2. Install Dependencies
+Install the required Python packages. Due to potential externally managed environment restrictions on Raspberry Pi OS, you might need to use a virtual environment.
 
-**⚠️ ATTENZIONE**: Non usare mai le password di esempio! Genera password sicure:
-
+#### Option 1: Direct Installation (if permitted)
 ```bash
-# Genera password sicure
-openssl rand -base64 32
+pip3 install flask flask-socketio mysql-connector-python --user
 ```
 
-Configura il file `.env`:
-```env
-MYSQL_ROOT_PASSWORD=TuaPasswordRootSicura123!
-MYSQL_PASSWORD=TuaPasswordUserSicura456!
-MYSQL_DATABASE=OriBruniRadioControls
-MYSQL_USER=meshdash
-FLASK_ENV=production
-LOG_LEVEL=INFO
-```
-
-### 🌐 Accesso Sistema Docker
-
-Dopo l'installazione:
-- **🖥️ Interfaccia Web**: `http://[IP_RASPBERRY]`
-- **🗄️ phpMyAdmin**: `http://[IP_RASPBERRY]:8080/phpmyadmin`
-- **📊 Database**: `[IP_RASPBERRY]:3306`
-
-### 📱 Comandi Docker
-
+#### Option 2: Virtual Environment (recommended)
 ```bash
-make help          # Mostra tutti i comandi
-make up            # Avvia sistema
-make down          # Ferma sistema
-make status        # Stato servizi
-make logs          # Logs in tempo reale
-make health        # Verifica sistema
-make db-backup     # Backup database
-make shell         # Accesso shell app
+python3 -m venv /home/radiocontrol/RECEIVER/venv
+/home/radiocontrol/RECEIVER/venv/bin/pip install flask flask-socketio mysql-connector-python
 ```
 
----
+### 3. Configure Database Settings
+Edit `config.ini` to set your MySQL database credentials under the `[mysql]` section. If the file does not exist or lacks the necessary section, the server will use default values which might need adjustment.
 
-## 🛠️ Installazione Tradizionale (Alternativa)
-
-### Prerequisiti
-- Raspberry Pi 4 (4GB+ RAM)
-- Raspberry Pi OS
-- Dispositivo Meshtastic USB
-- Display LCD I2C 20x4 (opzionale)
-
-### Script Automatico
-```bash
-chmod +x install.sh
-sudo ./install.sh
-sudo reboot
-```
-
-### Installazione Manuale
-
-#### 1. Dipendenze Sistema
-```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y python3 python3-pip python3-dev python3-venv \
-    build-essential libmariadb-dev pkg-config i2c-tools python3-smbus \
-    git curl wget mariadb-server mariadb-client nginx
-```
-
-#### 2. Abilita I2C
-```bash
-echo 'dtparam=i2c_arm=on' | sudo tee -a /boot/config.txt
-sudo reboot
-```
-
-#### 3. Database MySQL
-```bash
-sudo mysql_secure_installation
-sudo mysql -u root -p
-```
-
-```sql
-CREATE DATABASE OriBruniRadioControls;
-CREATE USER 'meshdash'@'localhost' IDENTIFIED BY 'password_sicura';
-GRANT ALL PRIVILEGES ON OriBruniRadioControls.* TO 'meshdash'@'localhost';
-FLUSH PRIVILEGES;
-```
-
-#### 4. Applicazione Python
-```bash
-sudo mkdir -p /opt/oribruni-receiver
-cd /opt/oribruni-receiver
-sudo cp -r /path/to/Raspberry_RECEIVER/* .
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt # Questo installerà tutte le dipendenze, inclusa PyPubSub per la gestione eventi Meshtastic
-```
-
----
-
-## ⚙️ Configurazione
-
-### File `config.ini`
+Example `config.ini`:
 ```ini
-[serial]
-port = auto  # Auto-detection o porta specifica
-
-[app]
-log_file = meshdash.log
-refresh_interval = 10000
-log_level = INFO
-
 [mysql]
 host = localhost
 port = 3306
 user = meshdash
-password = password_sicura
+password = your_password_here
 database = OriBruniRadioControls
-autocommit = True
 ```
 
-### Hardware Setup
+### 4. Run the Server
+Start the Flask server to serve the web interface and fetch data from the database.
 
-#### Dispositivo Meshtastic
-1. Collega via USB al Raspberry Pi
-2. Verifica rilevamento: `lsusb` e `ls /dev/ttyUSB*`
-3. Il sistema rileva automaticamente
-
-#### Display LCD I2C (Opzionale)
-1. **Collegamento**:
-   - VCC → 5V (Pin 2)
-   - GND → GND (Pin 6)
-   - SDA → GPIO 2 (Pin 3)
-   - SCL → GPIO 3 (Pin 5)
-
-2. **Test**: `sudo i2cdetect -y 1`
-
----
-
-## 🚀 Utilizzo
-
-### Docker (Consigliato)
+#### If using a virtual environment:
 ```bash
-cd ~/oribruni-receiver
-make up     # Avvia tutti i servizi
-make status # Verifica stato
-make logs   # Logs in tempo reale
+/home/radiocontrol/RECEIVER/venv/bin/python3 /home/radiocontrol/RECEIVER/server.py
 ```
 
-### Tradizionale
+#### If installed directly:
 ```bash
-cd /opt/oribruni-receiver
-source venv/bin/activate
-python server.py
+python3 /home/radiocontrol/RECEIVER/server.py
 ```
 
-### Servizi Systemd
-```bash
-sudo systemctl status oribruni-receiver
-sudo systemctl start oribruni-receiver
-sudo journalctl -u oribruni-receiver -f
+The server will run on port 5000 by default, accessible from any device on the same network.
+
+### 5. Access the Web Interface
+Open a web browser on any device connected to the same network as your Raspberry Pi and navigate to:
 ```
-
----
-
-## 📊 Interfaccia Web
-
-### Dashboard
-- **Visualizzazione Rete**: Grafico interattivo mesh
-- **Lista Dispositivi**: Stato batteria e nodi
-- **Real-time**: Aggiornamenti WebSocket
-
-### API Esportazione
-- **Endpoint**: `/export_punches`
-- **Formato**: CSV
-- **Filtri**: Unit ID, Last ID, Data/Ora
-
-**Esempio**:
+http://<Raspberry_Pi_IP>:5000
 ```
-GET /export_punches?unitId=1&lastId=100&date=2025-05-27
-```
+Replace `<Raspberry_Pi_IP>` with the IP address of your Raspberry Pi.
 
----
+## Web Interface
+- **Messaggi Recenti**: Displays recent messages with columns for Date, Type (TEL or PUNC), Nome Radio, Messaggio, Hops, RSSI, and SNR.
+- **Punzonature Recenti**: Shows recent punch data with columns for Timestamp, Nome, PKey, Record ID, Control, Card Number, and Punch Time.
+- The interface refreshes every 5 seconds to display the latest data from the database.
 
-## 🗄️ Database
+## Troubleshooting
+- **Date Display Issues**: If the "Data" column shows incorrect values or "N/A", check the browser console (F12 -> Console) for logs about `data_ora` to debug the date format.
+- **Database Connection Errors**: Ensure MySQL credentials in `config.ini` are correct and the database server is accessible from the Raspberry Pi.
+- **Dependency Installation**: If `pip` installation fails due to an externally managed environment, use a virtual environment as described in the installation steps.
+- **Server Not Starting**: Check for error messages in the terminal when running `server.py`. Common issues include missing dependencies or incorrect file paths.
 
-### Tabella `messages`
-- `id`: Chiave primaria
-- `timestamp`: Data/ora ricezione
-- `node_eui`: ID nodo mittente
-- `field1`, `field2`, `field3`: Dati messaggio
-- `raw`: Messaggio completo
+## Customization
+- **Web Interface**: Modify `templates/index.html` to adjust the layout or data display as needed.
+- **Server Behavior**: Edit `server.py` to change data fetching logic or add new endpoints for additional functionality.
 
-### Tabella `punches`
-- `id`: Chiave primaria
-- `timestamp`: Data/ora
-- `control`: Codice controllo
-- `card_number`: Numero chip
-- `punch_time`: Orario punzonatura
+## License
+This project is provided as-is for personal and educational use. Feel free to modify and distribute as needed for your specific requirements.
 
----
-
-## 🔧 Manutenzione
-
-### Backup
-```bash
-# Docker
-make db-backup
-
-# Tradizionale
-/opt/oribruni-receiver/backup.sh
-```
-
-### Monitoraggio
-```bash
-# Docker
-make status
-make health
-make logs
-
-# Tradizionale
-sudo systemctl status oribruni-receiver
-htop
-df -h
-```
-
-### Aggiornamenti
-```bash
-# Docker (con build remoto)
-# 1. Sul server di build:
-#    cd path/to/OriBruniRadioControls
-#    git pull
-#    cd Meshtastic/Raspberry_RECEIVER
-#    # Ricostruisci e pusha le immagini Docker necessarie (app, lcd-display) su GHCR
-#    # Esempio: docker buildx build --platform linux/arm64 -t ghcr.io/tuo-username/oribruni-receiver-app:latest --push -f Dockerfile .
-#
-# 2. Sul Raspberry Pi:
-#    cd ~/OriBruniRadioControls/Meshtastic/Raspberry_RECEIVER # O dove hai clonato il progetto
-#    git pull # Per aggiornare docker-compose.yml se necessario
-#    sudo docker compose pull # Scarica le immagini aggiornate da GHCR
-#    sudo docker compose up -d --force-recreate # Riavvia i servizi con le nuove immagini
-
-# Tradizionale
-cd /opt/oribruni-receiver # O il percorso della tua installazione tradizionale
-git pull
-source venv/bin/activate # Se usi un ambiente virtuale
-pip install --upgrade -r requirements.txt
-# Potrebbe essere necessario riavviare il servizio manualmente
-```
-
----
-
-## 🔒 Sicurezza
-
-### 🚨 IMPORTANTE - Repository Pubblica
-
-Se usi repository pubbliche:
-
-1. **Non committare mai password**:
-   ```bash
-   # File protetti da .gitignore
-   .env
-   config.ini
-   data/
-   logs/
-   backups/
-   ```
-
-2. **Usa file .env**:
-   ```bash
-   cp .env.example .env
-   nano .env  # Inserisci password sicure
-   ```
-
-3. **Genera password sicure**:
-   ```bash
-   openssl rand -base64 32
-   ```
-
-### Firewall
-```bash
-sudo ufw allow ssh
-sudo ufw allow 80
-sudo ufw allow 443
-sudo ufw enable
-```
-
-### Best Practices
-- ✅ Password complesse (32+ caratteri)
-- ✅ File .env locali non committati
-- ✅ Firewall configurato
-- ✅ Aggiornamenti regolari
-- ❌ Mai password hardcoded
-
----
-
-## 🐛 Risoluzione Problemi
-
-### Meshtastic Non Rilevato
-```bash
-lsusb
-ls /dev/ttyUSB*
-sudo usermod -a -G dialout pi
-```
-
-### Database Non Raggiungibile
-```bash
-# Docker
-make logs-db
-docker compose exec mysql mysqladmin ping -u root -p
-
-# Tradizionale
-mysql -u meshdash -p OriBruniRadioControls
-```
-
-### Display LCD Non Funziona
-```bash
-sudo i2cdetect -y 1
-lsmod | grep i2c
-sudo modprobe i2c-dev
-```
-
-### Container Non Si Avvia
-```bash
-make logs-app
-docker compose config
-make rebuild
-```
-
----
-
-## 📚 Guide Complete
-
-- **`INSTALLAZIONE_ONE_LINER.md`** - Installazione rapida
-- **`INSTALLAZIONE_RAPIDA.md`** - Guida dettagliata
-- **`DOCKER_README.md`** - Documentazione Docker
-- **`SICUREZZA.md`** - Guida sicurezza completa
-
----
-
-## 🤝 Contribuire
-
-1. Fork repository
-2. Crea branch: `git checkout -b feature/AmazingFeature`
-3. Commit: `git commit -m 'Add AmazingFeature'`
-4. Push: `git push origin feature/AmazingFeature`
-5. Pull Request
-
----
-
-## 📄 Licenza
-
-Distribuito sotto licenza MIT. Vedi `LICENSE` per dettagli.
-
-## 📞 Supporto
-
-- **Issues**: [GitHub Issues](https://github.com/president1991/OriBruniRadioControls/issues)
-- **Documentazione**: Guide complete nella directory del progetto
-
----
-
-**OriBruni Radio Controls** - Sistema professionale per controllo radio eventi di orienteering con tecnologia Meshtastic.
+## Contact
+For support or further customization, please contact the project maintainer or refer to the Meshtastic community for additional resources on mesh networking.

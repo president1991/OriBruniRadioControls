@@ -133,7 +133,7 @@ setup_database() {
 create_database_tables() {
     log_info "Creazione tabelle database..."
     
-    mysql -u meshdash -pMeshDash2025! OriBruniRadioControls << EOF
+    mysql -u meshdash -pPuhA7gWCrW OriBruniRadioControls << EOF
 CREATE TABLE IF NOT EXISTS messages (
   id INT AUTO_INCREMENT PRIMARY KEY,
   timestamp DATETIME NOT NULL,

@@ -3,67 +3,372 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MeshDash Web</title>
-  <!-- Caricamento librerie locali per funzionamento offline -->
-  <script src="{{ url_for('static', filename='js/socket.io.min.js') }}"></script>
-  <script src="{{ url_for('static', filename='js/vis-network.min.js') }}"></script>
+  <title>Dashboard Radio Control</title>
   <style>
-    body { margin: 0; font-family: Arial, sans-serif; }
-    #mynetwork { width: 100%; height: 60vh; border: 1px solid #ccc; }
-    #devices { padding: 10px; background: #f9f9f9; max-height: 20vh; overflow-y: auto; }
-    #export-form { padding: 10px; background: #fff; border-top: 1px solid #eee; }
-    #export-form input, #export-form button { margin-right: 8px; margin-bottom: 4px; }
+    body {
+      margin: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #f0f2f5;
+      color: #333;
+    }
+    header {
+      background-color: #007bff;
+      color: white;
+      padding: 15px 20px;
+      text-align: center;
+      font-size: 24px;
+      font-weight: bold;
+      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+    }
+    #data-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+      padding: 20px;
+      max-width: 1610px; /* Increased by 15% from 1400px */
+      margin: 0 auto;
+    }
+    #messaggi {
+      flex: 1.15;
+      min-width: 300px;
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+      padding: 15px;
+    }
+    #punches {
+      flex: 1;
+      min-width: 300px;
+      background-color: white;
+      border-radius: 8px;
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+      padding: 15px;
+    }
+    h3 {
+      color: #007bff;
+      margin-top: 0;
+      border-bottom: 2px solid #007bff;
+      padding-bottom: 10px;
+      font-size: 20px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid #e0e0e0;
+      padding: 10px;
+      text-align: left;
+    }
+    th {
+      background-color: #007bff;
+      color: white;
+      font-weight: bold;
+    }
+    tr:nth-child(even) {
+      background-color: #f8f9fa;
+    }
+    tr:hover {
+      background-color: #e9ecef;
+    }
+    @media (max-width: 768px) {
+      #data-container {
+        flex-direction: column;
+        padding: 10px;
+      }
+      table {
+        font-size: 12px;
+      }
+      th, td {
+        padding: 6px;
+      }
+    }
   </style>
 </head>
 <body>
-  <div id="devices"></div>
-  <div id="mynetwork"></div>
+  <header>
+    Dashboard Radio Control - Dati in Tempo Reale
+    <button id="infoButton" style="position: absolute; right: 20px; top: 15px; background-color: #fff; color: #007bff; border: none; border-radius: 50%; width: 30px; height: 30px; font-size: 16px; font-weight: bold; cursor: pointer; box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2); display: flex; align-items: center; justify-content: center;">i</button>
+  </header>
 
-  <div id="export-form">
-    <h3>Esporta Punches</h3>
-    <label>Unit ID: <input type="number" id="unitId" value="0" min="0"></label>
-    <label>Last ID: <input type="number" id="lastId" value="0" min="0"></label>
-    <label>Data: <input type="date" id="date"></label>
-    <label>Ora: <input type="time" id="time"></label>
-    <button id="exportBtn">Scarica</button>
+  <div id="data-container">
+    <div id="nodes" style="width: 100%; margin-bottom: 20px;">
+      <h3>Nodi Online</h3>
+      <table id="nodes-table">
+        <thead>
+          <tr>
+            <th>ID Nodo</th>
+            <th>Nome</th>
+            <th>PKey</th>
+            <th>Ultimo Segnale</th>
+            <th>Stato</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="messaggi">
+      <h3>Messaggi Recenti</h3>
+      <table id="messaggi-table">
+        <thead>
+          <tr>
+            <th>Data</th>
+            <th>Type</th>
+            <th>Nome Radio</th>
+            <th>Messaggio</th>
+            <th>Hops</th>
+            <th>RSSI</th>
+            <th>SNR</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div id="punches">
+      <h3>Punzonature Recenti</h3>
+      <div style="margin-bottom: 10px;">
+        <a href="/getpunches" target="_blank" class="back-button" style="background-color: #007bff; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; font-weight: bold; text-decoration: none;">Vedi Tutte le Punzonature (CSV)</a>
+      </div>
+      <table id="punches-table">
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Nome</th>
+            <th>PKey</th>
+            <th>Record ID</th>
+            <th>Control</th>
+            <th>Card Number</th>
+            <th>Punch Time</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </div>
 
   <script>
-    const socket = io();
-    const container = document.getElementById('mynetwork');
-    const devicesDiv = document.getElementById('devices');
-    let network = null;
+    // Function to fetch and update data from the server
+    function updateData() {
+      fetch('/data')
+        .then(response => response.json())
+        .then(data => {
+          // Update Messaggi Table
+          const messaggiBody = document.querySelector('#messaggi-table tbody');
+          messaggiBody.innerHTML = '';
+          data.messaggi.forEach(msg => {
+            const row = document.createElement('tr');
+            // Display full datetime from data_ora in format DD/MM/YYYY HH:MM:SS using the GMT timestamp directly
+            // Note: No manual time zone offset (e.g., +2 for UTC+2) is applied to avoid incorrect date shifts
+            let dateDisplay = 'N/A';
+            if (msg.data_ora) {
+              try {
+                // Log the raw value for debugging
+                console.log('Raw data_ora:', msg.data_ora);
+                // Use the full datetime as is if it's a string and format it
+                if (typeof msg.data_ora === 'string') {
+                  let dateObj = new Date(msg.data_ora);
+                  if (!isNaN(dateObj.getTime())) {
+                    let day = String(dateObj.getDate()).padStart(2, '0');
+                    let month = String(dateObj.getMonth() + 1).padStart(2, '0');
+                    let year = dateObj.getFullYear();
+                    let hours = String(dateObj.getHours()).padStart(2, '0');
+                    let minutes = String(dateObj.getMinutes()).padStart(2, '0');
+                    let seconds = String(dateObj.getSeconds()).padStart(2, '0');
+                    dateDisplay = `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+                  } else {
+                    dateDisplay = msg.data_ora;
+                  }
+                } else if (msg.data_ora instanceof Date) {
+                  // If it's a Date object, format it directly
+                  let day = String(msg.data_ora.getDate()).padStart(2, '0');
+                  let month = String(msg.data_ora.getMonth() + 1).padStart(2, '0');
+                  let year = msg.data_ora.getFullYear();
+                  let hours = String(msg.data_ora.getHours()).padStart(2, '0');
+                  let minutes = String(msg.data_ora.getMinutes()).padStart(2, '0');
+                  let seconds = String(msg.data_ora.getSeconds()).padStart(2, '0');
+                  dateDisplay = `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+                } else {
+                  // Fallback to string conversion
+                  dateDisplay = String(msg.data_ora);
+                }
+              } catch (e) {
+                console.error('Error parsing date:', e);
+                dateDisplay = 'N/A';
+              }
+            }
+            // Convert tipo_messaggio to TEL or PUNC, ensure comparison with number
+            const messageType = Number(msg.tipo_messaggio) === 0 ? 'TEL' : (Number(msg.tipo_messaggio) === 1 ? 'PUNC' : msg.tipo_messaggio);
+            row.innerHTML = `
+              <td>${dateDisplay}</td>
+              <td>${messageType}</td>
+              <td>${msg.nome_radio_control || 'N/A'}</td>
+              <td style="font-size: 12px;">${msg.messaggio_completo || 'N/A'}</td>
+              <td>${msg.Hops !== null ? msg.Hops : 'N/A'}</td>
+              <td>${msg.RSSI !== null ? msg.RSSI : 'N/A'}</td>
+              <td>${msg.SNR !== null ? msg.SNR : 'N/A'}</td>
+            `;
+            messaggiBody.appendChild(row);
+          });
 
-    socket.on('state_update', data => {
-      devicesDiv.innerHTML = data.nodes
-        .map(n => `${n.user} (${n.id}) – Battery: ${n.battery_level}%`)
-        .join('<br>');
+          // Update Nodes Table
+          const nodesBody = document.querySelector('#nodes-table tbody');
+          nodesBody.innerHTML = '';
+          data.nodes.forEach(node => {
+            const row = document.createElement('tr');
+            // Format last_signal as date and time using the GMT timestamp directly
+            // Note: No manual time zone offset (e.g., +2 for UTC+2) is applied to avoid incorrect date shifts
+            let lastSignalDisplay = 'N/A';
+            let isOnline = false;
+            if (node.last_signal) {
+              try {
+                if (typeof node.last_signal === 'string') {
+                  console.log('Raw last_signal:', node.last_signal);
+                  let dateObj = new Date(node.last_signal);
+                  if (!isNaN(dateObj.getTime())) {
+                    let day = String(dateObj.getDate()).padStart(2, '0');
+                    let month = String(dateObj.getMonth() + 1).padStart(2, '0');
+                    let year = dateObj.getFullYear();
+                    let hours = String(dateObj.getHours()).padStart(2, '0');
+                    let minutes = String(dateObj.getMinutes()).padStart(2, '0');
+                    let seconds = String(dateObj.getSeconds()).padStart(2, '0');
+                    lastSignalDisplay = `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+                    // Check if last_signal is from today based on current time
+                    let now = new Date();
+                    let today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                    let signalDate = new Date(dateObj.getFullYear(), dateObj.getMonth(), dateObj.getDate());
+                    isOnline = signalDate.getTime() >= today.getTime();
+                  } else {
+                    lastSignalDisplay = node.last_signal;
+                  }
+                } else if (node.last_signal instanceof Date) {
+                  console.log('Raw last_signal (Date object):', node.last_signal);
+                  let day = String(node.last_signal.getDate()).padStart(2, '0');
+                  let month = String(node.last_signal.getMonth() + 1).padStart(2, '0');
+                  let year = node.last_signal.getFullYear();
+                  let hours = String(node.last_signal.getHours()).padStart(2, '0');
+                  let minutes = String(node.last_signal.getMinutes()).padStart(2, '0');
+                  let seconds = String(node.last_signal.getSeconds()).padStart(2, '0');
+                  lastSignalDisplay = `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+                  // Check if last_signal is from today based on current time
+                  let now = new Date();
+                  let today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                  let signalDate = new Date(node.last_signal.getFullYear(), node.last_signal.getMonth(), node.last_signal.getDate());
+                  isOnline = signalDate.getTime() >= today.getTime();
+                } else {
+                  lastSignalDisplay = String(node.last_signal);
+                }
+              } catch (e) {
+                console.error('Error parsing last_signal:', e);
+                lastSignalDisplay = 'N/A';
+              }
+            }
+            row.innerHTML = `
+              <td>${node.id}</td>
+              <td>${node.name}</td>
+              <td>${node.pkey}</td>
+              <td>${lastSignalDisplay}</td>
+              <td style="color: ${isOnline ? 'green' : 'red'};">${isOnline ? 'Acceso' : 'Spento'}</td>
+            `;
+            nodesBody.appendChild(row);
+          });
 
-      const vs = data.nodes.map(n => ({ id: n.id, label: n.user }));
-      const es = data.links.map(([a,b,q]) => ({ from: a, to: b, value: q, title: `q=${q}` }));
+          // Update Punches Table
+          const punchesBody = document.querySelector('#punches-table tbody');
+          punchesBody.innerHTML = '';
+          data.punches.forEach(punch => {
+            const row = document.createElement('tr');
+            // Format timestamp in DD/MM/YYYY HH:MM:SS using the GMT timestamp directly
+            // Note: No manual time zone offset (e.g., +2 for UTC+2) is applied to avoid incorrect date shifts
+            let timestampDisplay = 'N/A';
+            if (punch.timestamp) {
+              try {
+                if (typeof punch.timestamp === 'string') {
+                  let dateObj = new Date(punch.timestamp);
+                  if (!isNaN(dateObj.getTime())) {
+                    let day = String(dateObj.getDate()).padStart(2, '0');
+                    let month = String(dateObj.getMonth() + 1).padStart(2, '0');
+                    let year = dateObj.getFullYear();
+                    let hours = String(dateObj.getHours()).padStart(2, '0');
+                    let minutes = String(dateObj.getMinutes()).padStart(2, '0');
+                    let seconds = String(dateObj.getSeconds()).padStart(2, '0');
+                    timestampDisplay = `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+                  } else {
+                    timestampDisplay = punch.timestamp;
+                  }
+                } else if (punch.timestamp instanceof Date) {
+                  let day = String(punch.timestamp.getDate()).padStart(2, '0');
+                  let month = String(punch.timestamp.getMonth() + 1).padStart(2, '0');
+                  let year = punch.timestamp.getFullYear();
+                  let hours = String(punch.timestamp.getHours()).padStart(2, '0');
+                  let minutes = String(punch.timestamp.getMinutes()).padStart(2, '0');
+                  let seconds = String(punch.timestamp.getSeconds()).padStart(2, '0');
+                  timestampDisplay = `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+                } else {
+                  timestampDisplay = String(punch.timestamp);
+                }
+              } catch (e) {
+                console.error('Error parsing timestamp:', e);
+                timestampDisplay = 'N/A';
+              }
+            }
+            // Format punch_time in DD/MM/YYYY HH:MM:SS using the GMT timestamp directly
+            // Note: No manual time zone offset (e.g., +2 for UTC+2) is applied to avoid incorrect date shifts
+            let punchTimeDisplay = 'N/A';
+            if (punch.punch_time) {
+              try {
+                if (typeof punch.punch_time === 'string') {
+                  let dateObj = new Date(punch.punch_time);
+                  if (!isNaN(dateObj.getTime())) {
+                    let day = String(dateObj.getDate()).padStart(2, '0');
+                    let month = String(dateObj.getMonth() + 1).padStart(2, '0');
+                    let year = dateObj.getFullYear();
+                    let hours = String(dateObj.getHours()).padStart(2, '0');
+                    let minutes = String(dateObj.getMinutes()).padStart(2, '0');
+                    let seconds = String(dateObj.getSeconds()).padStart(2, '0');
+                    punchTimeDisplay = `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+                  } else {
+                    punchTimeDisplay = punch.punch_time;
+                  }
+                } else if (punch.punch_time instanceof Date) {
+                  let day = String(punch.punch_time.getDate()).padStart(2, '0');
+                  let month = String(punch.punch_time.getMonth() + 1).padStart(2, '0');
+                  let year = punch.punch_time.getFullYear();
+                  let hours = String(punch.punch_time.getHours()).padStart(2, '0');
+                  let minutes = String(punch.punch_time.getMinutes()).padStart(2, '0');
+                  let seconds = String(punch.punch_time.getSeconds()).padStart(2, '0');
+                  punchTimeDisplay = `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
+                } else {
+                  punchTimeDisplay = String(punch.punch_time);
+                }
+              } catch (e) {
+                console.error('Error parsing punch_time:', e);
+                punchTimeDisplay = 'N/A';
+              }
+            }
+            row.innerHTML = `
+              <td>${timestampDisplay}</td>
+              <td>${punch.name}</td>
+              <td>${punch.pkey}</td>
+              <td>${punch.record_id}</td>
+              <td>${punch.control}</td>
+              <td>${punch.card_number}</td>
+              <td>${punchTimeDisplay}</td>
+            `;
+            punchesBody.appendChild(row);
+          });
+        })
+        .catch(error => console.error('Errore durante il recupero dei dati:', error));
+    }
 
-      const visData = { nodes: vs, edges: es };
-      const options = { edges: { scaling: { min: 1, max: 10 } }, physics: { stabilization: false } };
+    // Initial data load
+    updateData();
 
-      if (!network) {
-        network = new vis.Network(container, visData, options);
-      } else {
-        network.setData(visData);
-      }
-    });
-
-    document.getElementById('exportBtn').addEventListener('click', () => {
-      const unitId = document.getElementById('unitId').value;
-      const lastId = document.getElementById('lastId').value;
-      const date    = document.getElementById('date').value;
-      const time    = document.getElementById('time').value;
-
-      let url = `/export_punches?unitId=${unitId}&lastId=${lastId}`;
-      if (date) url += `&date=${date}`;
-      if (time) url += `&time=${time}`;
-
-      window.open(url, '_blank');
-    });
+    // Set interval to refresh data every 5 seconds
+    setInterval(updateData, 5000);
+    // Load external script for info popup
   </script>
+  <script src="/static/js/info_popup.js"></script>
 </body>
 </html>

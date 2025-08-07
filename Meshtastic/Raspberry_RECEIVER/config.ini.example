@@ -1,0 +1,12 @@
+[meshtastic]
+device_port = /dev/ttyUSB0
+
+[database]
+host = localhost
+user = meshdash
+password = PuhA7gWCrW
+database = OriBruniRadioControls
+
+[api]
+url = http://example.com/api
+key = your_api_key

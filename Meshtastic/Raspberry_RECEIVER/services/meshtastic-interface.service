@@ -1,0 +1,15 @@
+[Unit]
+Description=Meshtastic Interface Service for OriBruni
+After=network.target
+
+[Service]
+User=radiocontrol
+WorkingDirectory=/home/radiocontrol/RECEIVER
+ExecStart=/home/radiocontrol/RECEIVER/venv/bin/python3 /home/radiocontrol/RECEIVER/meshtastic_interface.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

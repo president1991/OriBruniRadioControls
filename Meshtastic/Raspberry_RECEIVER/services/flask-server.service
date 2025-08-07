@@ -1,0 +1,15 @@
+[Unit]
+Description=Flask Web Server for OriBruni
+After=network.target meshtastic-interface.service
+
+[Service]
+User=radiocontrol
+WorkingDirectory=/home/radiocontrol/RECEIVER
+ExecStart=/home/radiocontrol/RECEIVER/venv/bin/python3 /home/radiocontrol/RECEIVER/server.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

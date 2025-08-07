@@ -1,0 +1,101 @@
+# Requirements per i miglioramenti OriBruniRadioControls
+# Installare con: pip install -r requirements_improvements.txt
+
+# Sicurezza e crittografia
+cryptography>=41.0.0
+python-dotenv>=1.0.0
+
+# Database ottimizzato
+mysql-connector-python>=8.2.0
+SQLAlchemy>=2.0.0  # Per ORM avanzato (opzionale)
+
+# Monitoring e metriche
+prometheus-client>=0.19.0
+psutil>=5.9.0
+
+# Caching
+redis>=5.0.0
+hiredis>=2.2.0  # Driver Redis ottimizzato
+
+# API e web framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+python-multipart>=0.0.6
+
+# WebSocket e real-time
+websockets>=12.0
+python-socketio>=5.10.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+pytest-mock>=3.12.0
+
+# Logging strutturato
+structlog>=23.2.0
+colorlog>=6.8.0
+
+# Validazione e serializzazione
+marshmallow>=3.20.0
+cerberus>=1.3.5
+
+# HTTP client ottimizzato
+httpx>=0.25.0
+aiohttp>=3.9.0
+
+# Utility
+click>=8.1.0  # CLI commands
+rich>=13.7.0  # Pretty printing
+tabulate>=0.9.0  # Table formatting
+
+# Sviluppo e debug
+black>=23.11.0  # Code formatter
+flake8>=6.1.0  # Linter
+mypy>=1.7.0  # Type checker
+pre-commit>=3.6.0  # Git hooks
+
+# Deployment
+gunicorn>=21.2.0
+docker>=6.1.0
+
+# Backup e storage
+boto3>=1.34.0  # AWS S3 per backup cloud
+schedule>=1.2.0  # Job scheduling
+
+# Networking
+netifaces>=0.11.0
+scapy>=2.5.0  # Network analysis (opzionale)
+
+# GPIO per Raspberry Pi (solo su Raspberry)
+RPi.GPIO>=0.7.1; platform_machine=="armv7l" or platform_machine=="aarch64"
+RPLCD>=1.3.1; platform_machine=="armv7l" or platform_machine=="aarch64"
+
+# Seriale ottimizzato
+pyserial>=3.5
+pyserial-asyncio>=0.6
+
+# Meshtastic
+meshtastic>=2.2.0
+pubsub>=0.1.2
+
+# Costruzione pacchetti
+construct>=2.10.0
+
+# Configurazione avanzata
+dynaconf>=3.2.0
+pyyaml>=6.0.1
+
+# Analisi dati (opzionale)
+pandas>=2.1.0
+numpy>=1.25.0
+matplotlib>=3.8.0
+
+# Machine Learning per anomalie (opzionale)
+scikit-learn>=1.3.0
+joblib>=1.3.0
+
+# Compressione e archivi
+lz4>=4.3.0
+zstandard>=0.22.0

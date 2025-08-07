@@ -1,0 +1,15 @@
+[Unit]
+Description=LCD Display Service for OriBruni
+After=network.target
+
+[Service]
+User=radiocontrol
+WorkingDirectory=/home/radiocontrol/RECEIVER/lcd_display
+ExecStart=/home/radiocontrol/RECEIVER/venv/bin/python3 /home/radiocontrol/RECEIVER/lcd_display/lcd_display.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
