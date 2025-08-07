@@ -94,6 +94,7 @@ OriBruniRadioControls/
 
 ### 🔍 **Per Approfondire**
 - **[ANALISI COMPLETA](docs/ANALISI_COMPLETA_E_ROADMAP.md)** - Analisi tecnica dettagliata
+- **[SISTEMA IDENTIFICAZIONE](docs/SISTEMA_IDENTIFICAZIONE_E_DATABASE.md)** - Database remoto e chiavi dispositivi
 - **[Codice Sorgente](src/)** - Moduli documentati
 
 ## ✨ Caratteristiche Principali
@@ -187,4 +188,4 @@ Progetto open source per la comunità di orienteering italiana.
 
 **🏃‍♂️ Buona fortuna con i vostri eventi di orienteering! 🧭**
 
-*Sistema sviluppato e testato per OriBruni ASD*
+*Sistema sviluppato e testato per OriBruni*

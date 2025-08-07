@@ -187,4 +187,4 @@ I file esistenti sono mantenuti per compatibilità:
 
 ---
 
-*Sviluppato per OriBruni ASD - Sistema testato e ottimizzato per eventi di orienteering*
+*Sviluppato per OriBruni - Sistema testato e ottimizzato per eventi di orienteering*
