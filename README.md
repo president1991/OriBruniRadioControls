@@ -24,20 +24,37 @@ Sistema completo per gestione punzonature elettroniche negli eventi di orienteer
 - **Raspberry Pi 3/4** con Raspberry Pi OS
 - **Hardware specifico** (vedi documentazione)
 - **Connessione Internet** per installazione
+- **Credenziali dispositivo** fornite dall'amministratore
 
-### Deploy Automatico
+### 🆕 Setup Rapido (Consigliato)
 ```bash
 # 1. Scarica il progetto
 git clone https://github.com/president1991/OriBruniRadioControls.git
 cd OriBruniRadioControls
 
-# 2. Collega hardware (qualsiasi porta USB)
+# 2. Setup automatico completo (tutto in uno)
+bash quick_setup.sh
+# Lo script guida attraverso tutti i passaggi automaticamente
+```
 
-# 3. Deploy automatico
+### Installazione Manuale Nuovo Dispositivo
+```bash
+# 1. Installa e configura dispositivo con verifica online
+python3 install_device.py
+# Inserisci nome (es. OBRC_004) e pkey (es. 936D4854BB4E5)
+
+# 2. Deploy automatico
 # Per LETTORE:
-python3 scripts/deploy_raspberry.py reader reader-01 --auto-start
+python3 scripts/deploy_raspberry.py reader OBRC_004 --auto-start
 
 # Per RICEVITORE:
+python3 scripts/deploy_raspberry.py receiver OBRC_004 --auto-start
+```
+
+### Deploy Automatico (Dispositivi Esistenti)
+```bash
+# Per dispositivi già configurati
+python3 scripts/deploy_raspberry.py reader reader-01 --auto-start
 python3 scripts/deploy_raspberry.py receiver receiver-main --auto-start
 ```
 
@@ -89,6 +106,7 @@ OriBruniRadioControls/
 ## 📖 Documentazione
 
 ### 🚀 **Per Iniziare Subito**
+- **[INSTALLAZIONE DISPOSITIVO](docs/INSTALLAZIONE_DISPOSITIVO.md)** - 🆕 Installazione nuovo dispositivo con verifica online
 - **[GUIDA RAPIDA](docs/GUIDA_RAPIDA_INSTALLAZIONE.md)** - Installazione in 5 minuti
 - **[README DEPLOY](docs/README_DEPLOY.md)** - Documentazione completa deploy
 
@@ -96,6 +114,10 @@ OriBruniRadioControls/
 - **[ANALISI COMPLETA](docs/ANALISI_COMPLETA_E_ROADMAP.md)** - Analisi tecnica dettagliata
 - **[SISTEMA IDENTIFICAZIONE](docs/SISTEMA_IDENTIFICAZIONE_E_DATABASE.md)** - Database remoto e chiavi dispositivi
 - **[Codice Sorgente](src/)** - Moduli documentati
+
+### 🛠️ **Utility e Test**
+- `install_device.py` - Script installazione dispositivo con verifica online
+- `test_api_connection.py` - Test connettività e credenziali API
 
 ## ✨ Caratteristiche Principali
 
